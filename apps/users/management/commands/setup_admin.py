@@ -24,7 +24,12 @@ class Command(BaseCommand):
                 username=username, email=email, password=password
             )
             self.stdout.write(
-                self.style.SUCCESS(f"Successfully created superuser: {username}")
+                self.style.SUCCESS(
+                    f"Successfully created superuser: {username}\n"
+                    f"password: {password}\n"
+                    f"email: {email}\n"
+                    f"login here: http://localhost:8000/admin/"
+                )
             )
         else:
             self.stdout.write(

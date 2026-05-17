@@ -37,10 +37,7 @@ jobs:
           --health-retries 5
 
     env:
-      # Use the repo secret when configured; fall back to a CI-only value so
-      # the workflow is green out-of-the-box. This value is never used in
-      # production and only needs to be a non-empty string for Django to boot.
-      SECRET_KEY: ${{ secrets.SECRET_KEY || 'ci-only-not-for-production-key-do-not-use-anywhere-else' }}
+      SECRET_KEY: ci-only-not-for-production-key
       DEBUG: "False"
 
     steps:

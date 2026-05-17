@@ -1,0 +1,22 @@
+# Python Cache Files
+__pycache__/
+
+# Ruff Cache
+.ruff_cache/
+
+# MacOS
+.DS_Store
+
+# Virtual Environment
+.venv
+
+# Environment Variables
+.env
+
+# Database
+db.sqlite3
+db.sqlite3-wal
+db.sqlite3-shm
+
+# Django Static Files
+staticfiles/
