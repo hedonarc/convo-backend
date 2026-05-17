@@ -26,8 +26,11 @@ class UsersApiTests(APITestCase):
         self.user_detail_url = f"/api/users/{self.other_user.id}"
 
     def _authenticate(self, user):
+        """
+        Set the access JWT as an httpOnly cookie, matching CookieJWTAuthentication.
+        """
         refresh = RefreshToken.for_user(user)
-        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {refresh.access_token}")
+        self.client.cookies["access_token"] = str(refresh.access_token)
 
     def test_users_list_requires_authentication(self):
         """Return 401 when requesting the users list without a JWT."""

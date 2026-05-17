@@ -19,7 +19,7 @@ class AuthApiTests(APITestCase):
         )
 
     def test_register_creates_user_and_returns_token(self):
-        """Create a new user and return JWT tokens on register."""
+        """Create a new user, set JWT cookies, and return user data on register."""
         payload = {
             "username": "new_user",
             "email": "new@example.com",
@@ -33,11 +33,14 @@ class AuthApiTests(APITestCase):
 
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         self.assertEqual(response.data["message"], "You are registered")
-        self.assertIn("token", response.data)
-        self.assertIn("refresh", response.data["token"])
-        self.assertIn("access", response.data["token"])
+        self.assertNotIn("token", response.data)  # tokens are now in cookies, not body
         self.assertEqual(response.data["user"]["username"], "new_user")
         self.assertTrue(User.objects.filter(username="new_user").exists())
+        # Verify httpOnly cookies were set
+        self.assertIn("access_token", response.cookies)
+        self.assertIn("refresh_token", response.cookies)
+        self.assertTrue(response.cookies["access_token"]["httponly"])
+        self.assertTrue(response.cookies["refresh_token"]["httponly"])
 
     def test_register_rejects_duplicate_email(self):
         """Reject registration when the email is already in use."""
@@ -68,7 +71,7 @@ class AuthApiTests(APITestCase):
         self.assertIn("Passwords do not match", response.data["non_field_errors"])
 
     def test_login_with_username_returns_token(self):
-        """Authenticate with username and return JWT tokens."""
+        """Authenticate with username, set JWT cookies, and return user data."""
         payload = {"username": "existing_user", "password": self.password}
 
         response = self.client.post(self.login_url, payload, format="json")
@@ -76,18 +79,22 @@ class AuthApiTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data["message"], "You are logged in.")
         self.assertEqual(response.data["user"]["username"], "existing_user")
-        self.assertIn("token", response.data)
-        self.assertIn("access", response.data["token"])
+        self.assertNotIn("token", response.data)  # tokens are now in cookies, not body
+        # Verify httpOnly cookies were set
+        self.assertIn("access_token", response.cookies)
+        self.assertIn("refresh_token", response.cookies)
+        self.assertTrue(response.cookies["access_token"]["httponly"])
 
     def test_login_with_email_returns_token(self):
-        """Authenticate with email and return JWT tokens."""
+        """Authenticate with email, set JWT cookies, and return user data."""
         payload = {"username": "existing@example.com", "password": self.password}
 
         response = self.client.post(self.login_url, payload, format="json")
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data["user"]["email"], "existing@example.com")
-        self.assertIn("token", response.data)
+        self.assertNotIn("token", response.data)  # tokens are now in cookies, not body
+        self.assertIn("access_token", response.cookies)
 
     def test_login_with_invalid_credentials_fails(self):
         """Return 400 when credentials are invalid during login."""
