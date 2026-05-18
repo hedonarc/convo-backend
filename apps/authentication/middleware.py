@@ -1,7 +1,9 @@
+from http.cookies import SimpleCookie
 import logging
 from urllib.parse import parse_qs
 
 from channels.db import database_sync_to_async
+from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import AnonymousUser
 from rest_framework_simplejwt.exceptions import TokenError
@@ -44,6 +46,15 @@ class JWTAuthMiddleware:
 
         token_list = query_params.get("token")
         token_key = token_list[0] if token_list else None
+
+        # Prefer httpOnly cookie over query string
+        raw_cookie_header = dict(scope.get("headers", [])).get(b"cookie", b"").decode()
+        cookie = SimpleCookie()
+        cookie.load(raw_cookie_header)
+        cookie_name = settings.SIMPLE_JWT.get("AUTH_COOKIE", "access_token")
+        morsel = cookie.get(cookie_name)
+        if morsel:
+            token_key = morsel.value
 
         if not token_key or len(token_key) > 2048:
             # ❌ No token provided
