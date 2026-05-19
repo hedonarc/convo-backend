@@ -54,7 +54,7 @@ class RegisterView(APIView):
         response = Response(
             data={
                 "message": t("register.success"),
-                "user": UserSerializer(user).data,
+                "user": UserSerializer(user, context={"request": request}).data,
             },
             status=status.HTTP_201_CREATED,
         )
@@ -74,7 +74,7 @@ class LoginView(APIView):
         response = Response(
             data={
                 "message": t("login.success"),
-                "user": UserSerializer(user).data,
+                "user": UserSerializer(user, context={"request": request}).data,
             },
             status=status.HTTP_200_OK,
         )

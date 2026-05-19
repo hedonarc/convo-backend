@@ -7,18 +7,17 @@ SECRET_KEY = env("SECRET_KEY", default="django-insecure-local-key")
 
 ALLOWED_HOSTS = env.list(
     "ALLOWED_HOSTS",
-    default=["localhost", "127.0.0.1", "testserver", "https://app.apidog.com"],
+    default=["localhost", "127.0.0.1", "testserver"],
 )
 CORS_ALLOWED_ORIGINS = env.list(
     "CORS_ALLOWED_ORIGINS",
-    default=["http://localhost:3000", "http://testserver", "https://app.apidog.com"],
+    default=["http://localhost:3000", "http://testserver"],
 )
 CORS_ALLOW_CREDENTIALS = True
 
 CSRF_COOKIE_SAMESITE = "Lax"
 CSRF_COOKIE_SECURE = False
-CSRF_TRUSTED_ORIGINS = ["http://localhost:3000", "https://app.apidog.com"]
-
+CSRF_TRUSTED_ORIGINS = ["http://localhost:3000"]
 SESSION_COOKIE_SAMESITE = "Lax"
 
 # Use HTTP-safe cookies in local development
