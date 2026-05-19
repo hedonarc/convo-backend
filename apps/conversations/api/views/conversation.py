@@ -19,16 +19,21 @@ class ConversationView(APIView):
     def get(self, request):
         user = request.user
 
-        conversations = Conversation.objects.filter(
-            participant__user=user
-        ).select_related("last_message")
+        conversations = (
+            Conversation.objects.filter(participants__user=user)
+            .select_related("last_message")
+            .prefetch_related("participants")
+        )
 
         paginator = ConversationCursorPagination()
         paginated_conversations = paginator.paginate_queryset(
             conversations, request, view=self
         )
 
-        serializer = ConversationSerializer(paginated_conversations, many=True)
+        # serializer = ConversationSerializer(paginated_conversations, many=True)
+        serializer = ConversationSerializer(
+            paginated_conversations, many=True, context={"request": request}
+        )
 
         return paginator.get_paginated_response(serializer.data)
 
@@ -49,7 +54,9 @@ class ConversationView(APIView):
 
         return Response(
             data={
-                "conversation": ConversationSerializer(conversation).data,
+                "conversation": ConversationSerializer(
+                    conversation, context={"request": request}
+                ).data,
                 "is_created": is_created,
             },
             status=status.HTTP_201_CREATED if is_created else status.HTTP_200_OK,
