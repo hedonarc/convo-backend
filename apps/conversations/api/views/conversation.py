@@ -1,5 +1,4 @@
 from django.contrib.auth import get_user_model
-from django.db.models import Prefetch
 from rest_framework import status
 from rest_framework.generics import get_object_or_404
 from rest_framework.permissions import IsAuthenticated
@@ -7,7 +6,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.conversations.api.serializers.conversation import ConversationSerializer
-from apps.conversations.models import Conversation, ConversationInvite
+from apps.conversations.models import Conversation
 from apps.conversations.pagination import ConversationCursorPagination
 from apps.conversations.services.conversation_service import (
     get_or_create_direct_conversation,
@@ -22,8 +21,8 @@ class ConversationView(APIView):
 
         conversations = (
             Conversation.objects.filter(participants__user=user)
-            .select_related("last_message")
-            .prefetch_related("participants")
+            .select_related("last_message", "invitation")
+            .prefetch_related("participants__user")
         )
 
         paginator = ConversationCursorPagination()

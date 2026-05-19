@@ -35,5 +35,5 @@ urlpatterns = [
 
 urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
 
-if settings.SILKY_PYTHON_PROFILER:
+if getattr(settings, "SILKY_PYTHON_PROFILER", False):
     urlpatterns += [path("silk/", include("silk.urls", namespace="silk"))]

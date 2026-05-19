@@ -24,20 +24,17 @@ class InviteView(APIView):
         serializer = InviteCreateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
-        # --- Normalise email once; use this value everywhere below ----------
-        email = serializer.validated_data["email"].strip().lower()
+        email = serializer.validated_data["email"]
 
-        # --- Guard: return the existing conversation if a pending invite
-        #     already exists for this sender + email pair.
-        #     This prevents duplicate conversations and duplicate invites even
-        #     when the user clicks "Send" multiple times in quick succession.
+        # Reuse the existing invite/conversation so repeated clicks don't create
+        # duplicate rows for the same sender + email pair.
         existing_invite = ConversationInvite.get_pending(
             email=email,
             created_by=request.user,
         )
 
         if existing_invite:
-            # --- Rate Limit: 1 new invite per 24 hours ---------------------------
+            # Rate limit: one invite per recipient per 24 hours.
             available_after = existing_invite.updated_at + timedelta(hours=24)
             recent_invite_exists = timezone.now() < available_after
 
@@ -50,17 +47,15 @@ class InviteView(APIView):
                     status=status.HTTP_429_TOO_MANY_REQUESTS,
                 )
 
-            # Optionally re-send the invite email so the recipient gets a
-            # reminder, but we never create new DB rows.
+            # Re-send the email as a reminder without creating new rows.
             self._send_invite_email(
                 request.user,
                 email,
                 existing_invite.token,
             )
 
-            # Update the invite count
             existing_invite.invite_count += 1
-            existing_invite.save(update_fields=["invite_count"])
+            existing_invite.save(update_fields=["invite_count", "updated_at"])
 
             return Response(
                 {
@@ -70,7 +65,6 @@ class InviteView(APIView):
                 status=status.HTTP_200_OK,  # 200, not 201 — nothing was created
             )
 
-        # --- Happy path: no pending invite and not rate limited --------------
         conversation = Conversation.objects.create(created_by=request.user)
         Participant.objects.create(conversation=conversation, user=request.user)
 
@@ -90,13 +84,10 @@ class InviteView(APIView):
             status=status.HTTP_201_CREATED,
         )
 
-    # ------------------------------------------------------------------
-    # Helpers
-    # ------------------------------------------------------------------
-
     def _send_invite_email(self, sender_user, email: str, token: str) -> None:
         """Render and dispatch the invite email. Failures are logged, not raised."""
-        invite_link = f"{settings.FRONTEND_URL}/register?invite={token}&email={email}"
+        frontend_url = getattr(settings, "FRONTEND_URL", "http://localhost:3000")
+        invite_link = f"{frontend_url}/register?invite={token}&email={email}"
         logger.debug("invite_link: %s", invite_link)
 
         html_content = render_to_string(
