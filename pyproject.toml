@@ -51,9 +51,9 @@ version_toml = [
     "pyproject.toml:project.version",
 ]
 upload_to_vcs_release = true
-build_command = ""
+build_command = "uv lock"
 commit_message = "chore(release): backend {version} [skip ci]"
-tag_format = "backend-v{version}"
+tag_format = "v{version}"
 
 [tool.semantic_release.commit_parser_options]
 allowed_tags = ["feat", "fix", "perf", "build", "chore", "ci", "docs", "style", "refactor", "test"]
