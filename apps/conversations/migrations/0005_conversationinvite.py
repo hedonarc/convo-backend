@@ -9,7 +9,7 @@ class Migration(migrations.Migration):
     dependencies = [
         (
             "conversations",
-            "0003_alter_conversation_options_alter_message_options_and_more",
+            "0004_alter_participant_conversation",
         ),
         migrations.swappable_dependency(settings.AUTH_USER_MODEL),
     ]
