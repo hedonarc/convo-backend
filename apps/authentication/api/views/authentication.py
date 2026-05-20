@@ -16,6 +16,7 @@ from apps.users.api.serializers.user import UserSerializer
 from utils.translations import t
 
 
+# test branch
 def _set_auth_cookies(response, token: dict) -> None:
     """Attach access + refresh JWT as httpOnly cookies."""
     jwt_settings = settings.SIMPLE_JWT
