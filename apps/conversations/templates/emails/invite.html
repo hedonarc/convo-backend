@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>You've been invited to Convo</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+            background-color: #f9fafb;
+            margin: 0;
+            padding: 0;
+            color: #030712;
+        }
+        .container {
+            max-width: 600px;
+            margin: 40px auto;
+            background-color: #ffffff;
+            border-radius: 12px;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+            overflow: hidden;
+            border: 1px solid #e5e7eb;
+        }
+        .header {
+            background-color: #f56565; /* Brand color */
+            color: #ffffff;
+            padding: 30px;
+            text-align: center;
+        }
+        .header h1 {
+            margin: 0;
+            font-size: 24px;
+            font-weight: 700;
+        }
+        .content {
+            padding: 40px 30px;
+            text-align: center;
+        }
+        .content p {
+            font-size: 16px;
+            line-height: 1.6;
+            margin-bottom: 10px;
+            color: #4b5563;
+            word-break: break-word;
+        }
+        .button {
+            display: inline-block;
+            background-color: #f56565; /* Brand color */
+            color: #ffffff !important;
+            text-decoration: none;
+            font-weight: 600;
+            padding: 12px 24px;
+            border-radius: 6px;
+            font-size: 16px;
+            transition: background-color 0.2s;
+        }
+        .button:hover {
+            background-color: #e53e3e;
+        }
+        .footer {
+            background-color: #f9fafb;
+            padding: 20px 30px;
+            text-align: center;
+            font-size: 13px;
+            color: #9ca3af;
+            border-top: 1px solid #e5e7eb;
+        }
+        .fallback-link {
+            font-size: 12px;
+            color: #9ca3af;
+            word-break: break-all;
+            margin-top: 30px;
+            text-align: left;
+        }
+        .fallback-link a {
+            color: #f56565;
+            text-decoration: underline;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>Join Convo</h1>
+        </div>
+        <div class="content">
+            <h2>{{ inviter_name }} started a conversation with you</h2>
+
+            <p>
+              Join Convo to reply and continue the conversation.
+            </p>
+            
+            <a href="{{ invite_link }}" class="button">Accept Invitation</a>
+            
+            <div class="fallback-link">
+                <p>If the button doesn't work, you can copy and paste this link into your browser:</p>
+                <a href="{{ invite_link }}">{{ invite_link }}</a>
+            </div>
+        </div>
+        <div class="footer">
+            <p>&copy; 2026 Convo. All rights reserved.</p>
+        </div>
+    </div>
+</body>
+</html>

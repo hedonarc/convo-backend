@@ -39,3 +39,16 @@ if SILKY_PYTHON_PROFILER:
     MIDDLEWARE.insert(0, "silk.middleware.SilkyMiddleware")
     if "silk" not in INSTALLED_APPS:
         INSTALLED_APPS.append("silk")
+
+FRONTEND_URL = env.str("FRONTEND_URL", default="http://localhost:3000")
+
+# MailHog Configuration
+EMAIL_BACKEND = "django.core.mail.backends.smtp.EmailBackend"
+EMAIL_HOST = (
+    "localhost"  # Use '127.0.0.1' or the Docker container name if in a Docker network
+)
+EMAIL_PORT = 1025
+EMAIL_HOST_USER = ""  # Not required by MailHog
+EMAIL_HOST_PASSWORD = ""  # Not required by MailHog
+EMAIL_USE_TLS = False
+DEFAULT_FROM_EMAIL = "noreply@convo.local"

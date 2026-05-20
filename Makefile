@@ -30,15 +30,10 @@ setup: be-setup
 server:
 	$(PYTHON) manage.py runserver
 
-redis:
-	docker run -d --rm --name redis-dev -p 6379:6379 redis:7
-
 dev:
-	docker run -d --rm --name redis-dev -p 6379:6379 redis:7 & \
+	$(MAKE) redis
+	$(MAKE) mail
 	$(PYTHON) manage.py runserver
-
-stop-redis:
-	docker stop redis-dev
 
 migrate:
 	$(PYTHON) manage.py migrate
@@ -47,7 +42,8 @@ makemigrations:
 	$(PYTHON) manage.py makemigrations
 
 migs:
-	$(PYTHON) manage.py makemigrations && $(PYTHON) manage.py migrate
+	$(PYTHON) manage.py makemigrations
+	$(PYTHON) manage.py migrate
 
 showmigrations:
 	$(PYTHON) manage.py showmigrations
@@ -60,6 +56,61 @@ setup_admin:
 
 admin-password:
 	$(PYTHON) manage.py createsuperuser
+
+check-settings:
+	$(PYTHON) manage.py check --settings=settings.local
+
+test:
+	$(PYTHON) manage.py test --settings=settings.test
+
+# -------------------------
+# Redis
+# -------------------------
+
+redis:
+	docker start redis-dev || \
+	docker run -d --rm \
+		--name redis-dev \
+		-p 6379:6379 \
+		redis:7
+
+redis-stop:
+	docker stop redis-dev
+
+# -------------------------
+# Email (MailHog)
+# -------------------------
+
+mail:
+	docker start mailhog-dev || \
+	docker run -d \
+		--platform linux/amd64 \
+		--name mailhog-dev \
+		-p 1025:1025 \
+		-p 8025:8025 \
+		mailhog/mailhog
+
+mail-stop:
+	docker stop mailhog-dev
+
+open-mail:
+	open http://localhost:8025
+
+# -------------------------
+# Docker Helpers
+# -------------------------
+
+docker-stop:
+	-docker stop redis-dev
+	-docker stop mailhog-dev
+
+docker-clean:
+	-docker rm -f redis-dev
+	-docker rm -f mailhog-dev
+
+docker-logs:
+	docker logs -f redis-dev &
+	docker logs -f mailhog-dev
 
 # -------------------------
 # Ruff (Linting / Formatting)
@@ -85,13 +136,3 @@ lint: check checki fix format
 
 pc-ruff:
 	$(PRECOMMIT) run ruff --all-files
-
-# -------------------------
-# Testing & Checks
-# -------------------------
-
-check-settings:
-	$(PYTHON) manage.py check --settings=settings.local
-
-test:
-	$(PYTHON) manage.py test --settings=settings.test

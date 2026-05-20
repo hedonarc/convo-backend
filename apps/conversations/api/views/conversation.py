@@ -21,8 +21,8 @@ class ConversationView(APIView):
 
         conversations = (
             Conversation.objects.filter(participants__user=user)
-            .select_related("last_message")
-            .prefetch_related("participants")
+            .select_related("last_message", "invitation")
+            .prefetch_related("participants__user")
         )
 
         paginator = ConversationCursorPagination()
