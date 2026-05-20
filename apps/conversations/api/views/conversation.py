@@ -30,7 +30,6 @@ class ConversationView(APIView):
             conversations, request, view=self
         )
 
-        # serializer = ConversationSerializer(paginated_conversations, many=True)
         serializer = ConversationSerializer(
             paginated_conversations, many=True, context={"request": request}
         )
