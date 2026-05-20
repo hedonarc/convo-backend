@@ -20,3 +20,7 @@ db.sqlite3-shm
 
 # Django Static Files
 staticfiles/
+
+
+# for avatar files inside /media/
+media/

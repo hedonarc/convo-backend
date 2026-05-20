@@ -5,7 +5,9 @@ from django.db import models
 class Participant(models.Model):
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
     conversation = models.ForeignKey(
-        "conversations.Conversation", on_delete=models.CASCADE
+        "conversations.Conversation",
+        on_delete=models.CASCADE,
+        related_name="participants",
     )
 
     joined_at = models.DateTimeField(auto_now_add=True)
