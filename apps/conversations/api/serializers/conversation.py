@@ -1,6 +1,7 @@
 from rest_framework import serializers
 
 from apps.conversations.api.serializers.invite import ConversationInviteSerializer
+from apps.conversations.api.serializers.message import MessageSerializer
 from apps.conversations.models import Conversation
 from apps.users.api.serializers.user import UserSerializer
 
@@ -8,6 +9,7 @@ from apps.users.api.serializers.user import UserSerializer
 class ConversationSerializer(serializers.ModelSerializer):
     invitation = ConversationInviteSerializer(read_only=True)
     participants = serializers.SerializerMethodField()
+    last_message = MessageSerializer(read_only=True)
 
     class Meta:
         model = Conversation
