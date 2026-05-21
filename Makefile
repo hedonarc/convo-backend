@@ -77,6 +77,9 @@ redis:
 redis-stop:
 	docker stop redis-dev
 
+redis-cli:
+	docker exec -it redis-dev redis-cli
+
 # -------------------------
 # Email (MailHog)
 # -------------------------
