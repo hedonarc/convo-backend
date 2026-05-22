@@ -13,7 +13,8 @@ from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
 
 from apps.conversations.api.serializers.conversation import ConversationSerializer
-from apps.conversations.models import Conversation
+from apps.conversations.api.serializers.message import MessageSerializer
+from apps.conversations.models import Conversation, Message
 
 logger = logging.getLogger(__name__)
 
@@ -49,3 +50,36 @@ def broadcast_conversation_update(conversation: Conversation) -> None:
             "Failed to broadcast conversation update for conversation=%s",
             conversation.id,
         )
+
+
+def _broadcast_message_event(
+    conversation_id: int, message: Message, event_type: str
+) -> None:
+    """Shared body for message_edited / message_deleted broadcasts."""
+    channel_layer = get_channel_layer()
+    if channel_layer is None:
+        return
+
+    try:
+        payload = MessageSerializer(message).data
+        async_to_sync(channel_layer.group_send)(
+            f"conversation_{conversation_id}",
+            {"type": event_type, "message": payload},
+        )
+    except Exception:
+        logger.exception(
+            "Failed to broadcast %s for conversation=%s message=%s",
+            event_type,
+            conversation_id,
+            message.id,
+        )
+
+
+def broadcast_message_edited(conversation_id: int, message: Message) -> None:
+    """Push a message_edited frame to every client in the conversation room."""
+    _broadcast_message_event(conversation_id, message, "message_edited_event")
+
+
+def broadcast_message_deleted(conversation_id: int, message: Message) -> None:
+    """Push a message_deleted frame to every client in the conversation room."""
+    _broadcast_message_event(conversation_id, message, "message_deleted_event")

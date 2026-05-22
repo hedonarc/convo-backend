@@ -12,6 +12,10 @@ from apps.conversations.models import Message
 from apps.conversations.pagination import MessageCursorPagination
 from apps.conversations.permissions import IsConversationParticipant
 from apps.conversations.services.message_service import create_message
+from apps.conversations.services.realtime import (
+    broadcast_message_deleted,
+    broadcast_message_edited,
+)
 from apps.conversations.utils import get_conversation_or_404, get_message_or_404
 
 
@@ -70,6 +74,8 @@ class MessageView(APIView):
         message.edited_at = timezone.now()
         message.save(update_fields=["prev_content", "content", "edited_at"])
 
+        broadcast_message_edited(conversation.id, message)
+
         return Response(MessageSerializer(message).data, status=status.HTTP_200_OK)
 
     def delete(self, request, conversation_id, message_id):
@@ -86,5 +92,7 @@ class MessageView(APIView):
         message.save(
             update_fields=["prev_content", "content", "is_deleted", "deleted_at"]
         )
+
+        broadcast_message_deleted(conversation.id, message)
 
         return Response({"message": "Message deleted"}, status=status.HTTP_200_OK)

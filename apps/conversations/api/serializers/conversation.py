@@ -10,6 +10,11 @@ class ConversationSerializer(serializers.ModelSerializer):
     invitation = ConversationInviteSerializer(read_only=True)
     participants = serializers.SerializerMethodField()
     last_message = MessageSerializer(read_only=True)
+    # Per-participant read pointer:
+    # { "<user_id>": <last_read_message_id | null>, ... }
+    # Used by the frontend to compute the unread dot for the current user and
+    # the "Seen" indicator for other participants on own messages.
+    read_receipts = serializers.SerializerMethodField()
 
     class Meta:
         model = Conversation
@@ -22,6 +27,7 @@ class ConversationSerializer(serializers.ModelSerializer):
             "updated_at",
             "invitation",
             "participants",
+            "read_receipts",
         ]
 
     def get_participants(self, obj):
@@ -29,3 +35,6 @@ class ConversationSerializer(serializers.ModelSerializer):
         return UserSerializer(
             [p.user for p in participants], many=True, context=self.context
         ).data
+
+    def get_read_receipts(self, obj):
+        return {str(p.user_id): p.last_read_message_id for p in obj.participants.all()}

@@ -1,6 +1,7 @@
 import json
 import logging
 
+from channels.db import database_sync_to_async
 from channels.generic.websocket import AsyncWebsocketConsumer
 
 from apps.conversations.api.serializers.message import MessageSerializer
@@ -11,6 +12,7 @@ from apps.conversations.queries import (
     message_belongs_to_conversation,
     update_read_receipt,
 )
+from apps.conversations.services.realtime import broadcast_conversation_update
 
 logger = logging.getLogger(__name__)
 
@@ -169,6 +171,7 @@ class ConversationConsumer(AsyncWebsocketConsumer):
 
         await update_read_receipt(self.user, self.conversation, message_id)
 
+        # In-conversation peers get the seen indicator update.
         await self.channel_layer.group_send(
             self.room_group_name,
             {
@@ -177,6 +180,12 @@ class ConversationConsumer(AsyncWebsocketConsumer):
                 "message_id": message_id,
             },
         )
+
+        # Sidebar / unread-dot also needs to know — fan out the updated
+        # conversation (with refreshed read_receipts) to every participant's
+        # per-user channel. Wrapped via database_sync_to_async because the
+        # sync broadcaster reads from the DB and uses async_to_sync internally.
+        await database_sync_to_async(broadcast_conversation_update)(self.conversation)
 
     # -------------------------------------------------------------------------
     # Group Event Handlers
@@ -223,6 +232,18 @@ class ConversationConsumer(AsyncWebsocketConsumer):
                     },
                 }
             )
+        )
+
+    async def message_edited_event(self, event):
+        """Deliver an edited-message snapshot to the connected client."""
+        await self.send(
+            text_data=json.dumps({"type": "message_edited", "data": event["message"]})
+        )
+
+    async def message_deleted_event(self, event):
+        """Deliver a soft-deleted-message snapshot to the connected client."""
+        await self.send(
+            text_data=json.dumps({"type": "message_deleted", "data": event["message"]})
         )
 
     # -------------------------------------------------------------------------
