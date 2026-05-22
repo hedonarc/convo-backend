@@ -15,6 +15,9 @@ class ConversationSerializer(serializers.ModelSerializer):
     # Used by the frontend to compute the unread dot for the current user and
     # the "Seen" indicator for other participants on own messages.
     read_receipts = serializers.SerializerMethodField()
+    # Per-participant delivery pointer — drives the gray double-tick on own
+    # messages. Always ≤ read_receipts[user] once the user has read.
+    delivery_receipts = serializers.SerializerMethodField()
 
     class Meta:
         model = Conversation
@@ -28,6 +31,7 @@ class ConversationSerializer(serializers.ModelSerializer):
             "invitation",
             "participants",
             "read_receipts",
+            "delivery_receipts",
         ]
 
     def get_participants(self, obj):
@@ -38,3 +42,8 @@ class ConversationSerializer(serializers.ModelSerializer):
 
     def get_read_receipts(self, obj):
         return {str(p.user_id): p.last_read_message_id for p in obj.participants.all()}
+
+    def get_delivery_receipts(self, obj):
+        return {
+            str(p.user_id): p.last_delivered_message_id for p in obj.participants.all()
+        }

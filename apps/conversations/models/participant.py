@@ -12,6 +12,9 @@ class Participant(models.Model):
 
     joined_at = models.DateTimeField(auto_now_add=True)
     last_read_message_id = models.BigIntegerField(null=True, blank=True)
+    # Set when this participant's client has received the message via the
+    # conversation WebSocket. Always ≤ last_read_message_id once read.
+    last_delivered_message_id = models.BigIntegerField(null=True, blank=True)
 
     class Meta:
         unique_together = ("user", "conversation")

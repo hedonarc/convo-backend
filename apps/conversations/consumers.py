@@ -10,6 +10,7 @@ from apps.conversations.queries import (
     db_create_message,
     get_conversation_for_user,
     message_belongs_to_conversation,
+    update_delivery_receipt,
     update_read_receipt,
 )
 from apps.conversations.services.realtime import broadcast_conversation_update
@@ -194,9 +195,55 @@ class ConversationConsumer(AsyncWebsocketConsumer):
     # -------------------------------------------------------------------------
 
     async def chat_message_event(self, event):
-        """Deliver a new message to the connected WebSocket client."""
+        """Deliver a new message to the connected WebSocket client.
+
+        Auto-marks delivery for peer-sent messages — by the time this handler
+        runs, the message has been pushed to this participant's socket, so we
+        know the client received it. Skips own sends (we don't deliver to
+        ourselves) and short-circuits if the pointer is already at/past this id.
+        """
+        message = event["message"]
+
+        if message["sender"] != self.user.id:
+            changed = await update_delivery_receipt(
+                self.user, self.conversation, message["id"]
+            )
+            if changed:
+                await self.channel_layer.group_send(
+                    self.room_group_name,
+                    {
+                        "type": "delivered_event",
+                        "user_id": self.user.id,
+                        "message_id": message["id"],
+                    },
+                )
+                # Sidebar / sender's other tabs need the updated delivery
+                # pointer — fan out the fresh conversation snapshot.
+                await database_sync_to_async(broadcast_conversation_update)(
+                    self.conversation
+                )
+
+        await self.send(text_data=json.dumps({"type": "new_message", "data": message}))
+
+    async def delivered_event(self, event):
+        """Deliver a delivery receipt to the connected client.
+
+        Skipped for the participant who confirmed delivery — they don't need
+        their own receipt back. Same pattern as `typing_event`.
+        """
+        if event["user_id"] == self.user.id:
+            return
+
         await self.send(
-            text_data=json.dumps({"type": "new_message", "data": event["message"]})
+            text_data=json.dumps(
+                {
+                    "type": "delivered_receipt",
+                    "data": {
+                        "user_id": event["user_id"],
+                        "message_id": event["message_id"],
+                    },
+                }
+            )
         )
 
     async def typing_event(self, event):

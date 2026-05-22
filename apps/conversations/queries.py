@@ -61,3 +61,21 @@ def update_read_receipt(user, conversation, message_id: int) -> None:
     Participant.objects.filter(user=user, conversation=conversation).update(
         last_read_message_id=message_id
     )
+
+
+@database_sync_to_async
+def update_delivery_receipt(user, conversation, message_id: int) -> bool:
+    """
+    Update the participant's last_delivered_message_id only if the incoming
+    id is newer. Returns True if a change was written, False otherwise — lets
+    the caller skip the broadcast on a no-op.
+    """
+    updated = (
+        Participant.objects.filter(
+            user=user,
+            conversation=conversation,
+        )
+        .exclude(last_delivered_message_id__gte=message_id)
+        .update(last_delivered_message_id=message_id)
+    )
+    return updated > 0
