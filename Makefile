@@ -96,7 +96,7 @@ mail:
 mail-stop:
 	docker stop mailhog-dev
 
-open-mail:
+mail-open:
 	open http://localhost:8025
 
 # -------------------------

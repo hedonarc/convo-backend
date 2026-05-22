@@ -12,7 +12,7 @@ Keeping these at module level rather than as consumer methods makes them:
 
 from channels.db import database_sync_to_async
 
-from apps.conversations.models import Message, Participant
+from apps.conversations.models import Conversation, Message, Participant
 from apps.conversations.services.message_service import create_message
 
 
@@ -69,6 +69,9 @@ def update_delivery_receipt(user, conversation, message_id: int) -> bool:
     Update the participant's last_delivered_message_id only if the incoming
     id is newer. Returns True if a change was written, False otherwise — lets
     the caller skip the broadcast on a no-op.
+
+    `conversation` may be a Conversation instance or a primary-key int —
+    Django's filter accepts both transparently.
     """
     updated = (
         Participant.objects.filter(
@@ -79,3 +82,18 @@ def update_delivery_receipt(user, conversation, message_id: int) -> bool:
         .update(last_delivered_message_id=message_id)
     )
     return updated > 0
+
+
+@database_sync_to_async
+def get_conversation_if_participant(user, conversation_id: int):
+    """
+    Return the Conversation (with `last_message` prefetched) iff *user* is
+    a participant. Used by UserConsumer when fanning out delivery updates —
+    a defensive re-check that the user belongs to the conversation they're
+    about to be marked as having delivered.
+    """
+    return (
+        Conversation.objects.select_related("last_message")
+        .filter(id=conversation_id, participants__user=user)
+        .first()
+    )
