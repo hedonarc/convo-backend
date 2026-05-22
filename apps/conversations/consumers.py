@@ -232,3 +232,50 @@ class ConversationConsumer(AsyncWebsocketConsumer):
     async def send_error(self, message: str):
         """Send a structured error frame to the connected client."""
         await self.send(text_data=json.dumps({"type": "error", "message": message}))
+
+
+class UserConsumer(AsyncWebsocketConsumer):
+    """
+    One connection per logged-in user. Joins the per-user fanout group
+    `user_<id>` so the server can push events spanning any conversation the
+    user participates in — primarily for the sidebar's conversation list to
+    update in real time without one socket per conversation.
+
+    Read-only for now: no incoming actions. Could grow to handle global
+    presence / cross-conversation typing later.
+    """
+
+    async def connect(self):
+        self.user = self.scope["user"]
+
+        # Defensive — JWTAuthMiddleware already blocks anonymous users.
+        if not self.user.is_authenticated:
+            await self.close(code=4001)
+            return
+
+        self.room_group_name = f"user_{self.user.id}"
+        await self.channel_layer.group_add(self.room_group_name, self.channel_name)
+        await self.accept()
+
+        logger.info("User WebSocket connected: user=%s", self.user.id)
+
+    async def disconnect(self, close_code):
+        if hasattr(self, "room_group_name"):
+            await self.channel_layer.group_discard(
+                self.room_group_name, self.channel_name
+            )
+            logger.info(
+                "User WebSocket disconnected: user=%s (code=%s)",
+                self.user.id,
+                close_code,
+            )
+
+    # ── Group event handlers ────────────────────────────────────────────────
+
+    async def conversation_updated_event(self, event):
+        """Push a conversation snapshot to the connected client."""
+        await self.send(
+            text_data=json.dumps(
+                {"type": "conversation_updated", "data": event["conversation"]}
+            )
+        )

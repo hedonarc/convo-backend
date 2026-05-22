@@ -1,4 +1,5 @@
 from apps.conversations.models import Conversation, Participant
+from apps.conversations.services.realtime import broadcast_conversation_update
 
 
 def generate_conversation_key(user1, user2):
@@ -31,5 +32,7 @@ def get_or_create_direct_conversation(sender, recipient):
                 Participant(user=recipient, conversation=conversation),
             ]
         )
+        # Push the brand-new conversation to both participants' sidebars.
+        broadcast_conversation_update(conversation)
 
     return conversation, is_created

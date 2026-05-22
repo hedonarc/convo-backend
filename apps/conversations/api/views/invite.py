@@ -13,6 +13,7 @@ from rest_framework.views import APIView
 from apps.conversations.api.serializers.conversation import ConversationSerializer
 from apps.conversations.api.serializers.invite import InviteCreateSerializer
 from apps.conversations.models import Conversation, ConversationInvite, Participant
+from apps.conversations.services.realtime import broadcast_conversation_update
 
 logger = logging.getLogger(__name__)
 
@@ -133,6 +134,10 @@ class InviteAcceptView(APIView):
 
         invite.is_accepted = True
         invite.save()
+
+        # Notify both participants — sender's sidebar swaps the pending panel
+        # for a regular chat; new participant sees the conversation appear.
+        broadcast_conversation_update(invite.conversation)
 
         return Response(
             ConversationSerializer(invite.conversation).data,
