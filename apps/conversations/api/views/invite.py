@@ -16,7 +16,10 @@ from apps.conversations.api.serializers.invite import (
     InviteResolveSerializer,
 )
 from apps.conversations.models import Conversation, ConversationInvite, Participant
-from apps.conversations.services.realtime import broadcast_conversation_update
+from apps.conversations.services.realtime import (
+    broadcast_conversation_update,
+    notify_invite_accepted,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -172,6 +175,10 @@ class InviteAcceptView(APIView):
         # Notify both participants — sender's sidebar swaps the pending panel
         # for a regular chat; new participant sees the conversation appear.
         broadcast_conversation_update(invite.conversation)
+        # Inviter-only celebratory notification — drives the "X joined the
+        # conversation" toast on the sender's side. Fires after the sidebar
+        # update so the conversation row exists before the toast points at it.
+        notify_invite_accepted(invite, request.user)
 
         return Response(
             ConversationSerializer(invite.conversation).data,

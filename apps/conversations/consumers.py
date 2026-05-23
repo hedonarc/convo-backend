@@ -398,3 +398,22 @@ class UserConsumer(AsyncWebsocketConsumer):
         await self.send(
             text_data=json.dumps({"type": "conversation_updated", "data": conversation})
         )
+
+    async def invite_accepted_event(self, event):
+        """Push an inviter-only notification frame when an invitee accepts.
+
+        Carries the acceptor's public profile + the conversation id so the
+        frontend can render a toast ("X joined the conversation") and
+        optionally focus the new conversation in the sidebar.
+        """
+        await self.send(
+            text_data=json.dumps(
+                {
+                    "type": "invite_accepted",
+                    "data": {
+                        "acceptor": event["acceptor"],
+                        "conversation_id": event["conversation_id"],
+                    },
+                }
+            )
+        )
