@@ -20,6 +20,7 @@ from apps.conversations.services.realtime import (
     broadcast_conversation_update,
     notify_invite_accepted,
 )
+from utils.translations import t
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +49,7 @@ class InviteView(APIView):
             if recent_invite_exists:
                 return Response(
                     {
-                        "error": "You can only send one invite every 24 hours.",
+                        "error": t("invites.rate_limit_error"),
                         "available_after": available_after,
                     },
                     status=status.HTTP_429_TOO_MANY_REQUESTS,
@@ -109,8 +110,10 @@ class InviteView(APIView):
         )
 
         send_mail(
-            subject=f"{sender_user.username} invited you to Convo",
-            message=f"Join Convo and start chatting: {invite_link}",
+            subject=t("emails.invite_subject").format(
+                inviter_name=sender_user.username
+            ),
+            message=t("emails.invite_body").format(invite_link=invite_link),
             from_email=settings.DEFAULT_FROM_EMAIL,
             recipient_list=[email],
             html_message=html_content,
@@ -136,7 +139,7 @@ class InviteResolveView(APIView):
             )
         except ConversationInvite.DoesNotExist:
             return Response(
-                {"error": "Invalid invite token"},
+                {"error": t("invites.invalid_token")},
                 status=status.HTTP_404_NOT_FOUND,
             )
 
@@ -154,13 +157,13 @@ class InviteAcceptView(APIView):
             invite = ConversationInvite.objects.get(token=token)
         except ConversationInvite.DoesNotExist:
             return Response(
-                {"error": "Invalid invite token"},
+                {"error": t("invites.invalid_token")},
                 status=status.HTTP_404_NOT_FOUND,
             )
 
         if invite.is_accepted:
             return Response(
-                {"error": "Invite already accepted"},
+                {"error": t("invites.already_accepted")},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 

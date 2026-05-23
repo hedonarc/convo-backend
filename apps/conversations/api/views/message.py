@@ -17,6 +17,7 @@ from apps.conversations.services.realtime import (
     broadcast_message_edited,
 )
 from apps.conversations.utils import get_conversation_or_404, get_message_or_404
+from utils.translations import t
 
 
 class MessageView(APIView):
@@ -65,7 +66,7 @@ class MessageView(APIView):
 
         if not new_content.strip():
             return Response(
-                {"error": "Cannot edit message with empty content"},
+                {"error": t("messages.empty_edit_error")},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
@@ -95,4 +96,7 @@ class MessageView(APIView):
 
         broadcast_message_deleted(conversation.id, message)
 
-        return Response({"message": "Message deleted"}, status=status.HTTP_200_OK)
+        return Response(
+            {"message": t("messages.deleted_success")},
+            status=status.HTTP_200_OK,
+        )

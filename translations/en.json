@@ -11,6 +11,13 @@
     "invalid_credentials_caps": "Invalid Credentials",
     "success": "You are logged in."
   },
+  "logout": {
+    "success": "You are logged out."
+  },
+  "auth": {
+    "refresh_token_missing": "Refresh token missing.",
+    "token_refreshed": "Token refreshed."
+  },
   "validation": {
     "email_exists": "Email already exists",
     "username_exists": "Username already exists",
@@ -18,5 +25,25 @@
   },
   "conversations": {
     "not_found": "Conversation not found"
+  },
+  "messages": {
+    "empty_edit_error": "Cannot edit message with empty content",
+    "deleted_success": "Message deleted",
+    "empty_content": "Message content cannot be empty",
+    "too_long": "Message exceeds the maximum length of {max_length} characters",
+    "not_found_in_conversation": "Message not found in this conversation"
+  },
+  "invites": {
+    "rate_limit_error": "You can only send one invite every 24 hours.",
+    "invalid_token": "Invalid invite token",
+    "already_accepted": "Invite already accepted"
+  },
+  "emails": {
+    "invite_subject": "{inviter_name} invited you to Convo",
+    "invite_body": "Join Convo and start chatting: {invite_link}"
+  },
+  "websocket": {
+    "invalid_json": "Invalid JSON",
+    "unknown_action": "Unknown action: {action}"
   }
 }

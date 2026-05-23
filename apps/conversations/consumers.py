@@ -16,6 +16,7 @@ from apps.conversations.queries import (
 )
 from apps.conversations.services import presence
 from apps.conversations.services.realtime import broadcast_conversation_update
+from utils.translations import t
 
 logger = logging.getLogger(__name__)
 
@@ -95,14 +96,14 @@ class ConversationConsumer(AsyncWebsocketConsumer):
             action = payload.get("action")
             data = payload.get("data", {})
         except (json.JSONDecodeError, AttributeError):
-            await self.send_error("Invalid JSON format")
+            await self.send_error(t("websocket.invalid_json"))
             return
 
         handler_name = self.ACTION_HANDLERS.get(action)
         if handler_name:
             await getattr(self, handler_name)(data)
         else:
-            await self.send_error(f"Unknown action: {action!r}")
+            await self.send_error(t("websocket.unknown_action").format(action=action))
 
     # -------------------------------------------------------------------------
     # Action Handlers
@@ -114,12 +115,12 @@ class ConversationConsumer(AsyncWebsocketConsumer):
         """
         content = data.get("content", "").strip()
         if not content:
-            await self.send_error("Message content cannot be empty")
+            await self.send_error(t("messages.empty_content"))
             return
 
         if len(content) > MAX_MESSAGE_LENGTH:
             await self.send_error(
-                f"Message exceeds the maximum length of {MAX_MESSAGE_LENGTH} characters"
+                t("messages.too_long").format(max_length=MAX_MESSAGE_LENGTH)
             )
             return
 
@@ -169,7 +170,7 @@ class ConversationConsumer(AsyncWebsocketConsumer):
             self.conversation, message_id
         )
         if not message_exists:
-            await self.send_error("Message not found in this conversation")
+            await self.send_error(t("messages.not_found_in_conversation"))
             return
 
         await update_read_receipt(self.user, self.conversation, message_id)
@@ -367,7 +368,9 @@ class UserConsumer(AsyncWebsocketConsumer):
             data = payload.get("data", {})
         except (json.JSONDecodeError, AttributeError):
             await self.send(
-                text_data=json.dumps({"type": "error", "message": "Invalid JSON"})
+                text_data=json.dumps(
+                    {"type": "error", "message": t("websocket.invalid_json")}
+                )
             )
             return
 
