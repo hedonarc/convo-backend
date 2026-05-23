@@ -6,12 +6,15 @@ from django.core.mail import send_mail
 from django.template.loader import render_to_string
 from django.utils import timezone
 from rest_framework import status
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.conversations.api.serializers.conversation import ConversationSerializer
-from apps.conversations.api.serializers.invite import InviteCreateSerializer
+from apps.conversations.api.serializers.invite import (
+    InviteCreateSerializer,
+    InviteResolveSerializer,
+)
 from apps.conversations.models import Conversation, ConversationInvite, Participant
 from apps.conversations.services.realtime import broadcast_conversation_update
 
@@ -88,7 +91,10 @@ class InviteView(APIView):
     def _send_invite_email(self, sender_user, email: str, token: str) -> None:
         """Render and dispatch the invite email. Failures are logged, not raised."""
         frontend_url = getattr(settings, "FRONTEND_URL", "http://localhost:3000")
-        invite_link = f"{frontend_url}/register?invite={token}&email={email}"
+        # Token-only URL — the backend resolves email + inviter from the token,
+        # so the link stays short, trustworthy, and doesn't leak the email in
+        # logs / browser history / shoulder-surfing.
+        invite_link = f"{frontend_url}/invite/{token}"
         logger.debug("invite_link: %s", invite_link)
 
         html_content = render_to_string(
@@ -106,6 +112,34 @@ class InviteView(APIView):
             recipient_list=[email],
             html_message=html_content,
             fail_silently=True,
+        )
+
+
+class InviteResolveView(APIView):
+    """
+    Public lookup of an invite by its token. Used by the Accept Invite screen
+    to render inviter name + canonical email before the user authenticates.
+
+    Auth: AllowAny. The 64-char URL-safe token itself is the credential; only
+    a sliver of public-safe data is returned (no conversation contents).
+    """
+
+    permission_classes = [AllowAny]
+
+    def get(self, request, token):
+        try:
+            invite = ConversationInvite.objects.select_related("created_by").get(
+                token=token
+            )
+        except ConversationInvite.DoesNotExist:
+            return Response(
+                {"error": "Invalid invite token"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        return Response(
+            InviteResolveSerializer(invite, context={"request": request}).data,
+            status=status.HTTP_200_OK,
         )
 
 
