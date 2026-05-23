@@ -14,6 +14,7 @@ from apps.conversations.queries import (
     update_delivery_receipt,
     update_read_receipt,
 )
+from apps.conversations.services import presence
 from apps.conversations.services.realtime import broadcast_conversation_update
 
 logger = logging.getLogger(__name__)
@@ -310,9 +311,15 @@ class UserConsumer(AsyncWebsocketConsumer):
     user participates in — primarily for the sidebar's conversation list to
     update in real time without one socket per conversation.
 
-    Read-only for now: no incoming actions. Could grow to handle global
-    presence / cross-conversation typing later.
+    Also owns presence: on connect/disconnect the user is flipped to
+    online/offline in Redis and the change is broadcast to conversation
+    peers. The client may send a `visibility` action to mark the tab as
+    away (hidden) or online (visible) without dropping the socket.
     """
+
+    USER_ACTION_HANDLERS = {
+        "visibility": "handle_visibility",
+    }
 
     async def connect(self):
         self.user = self.scope["user"]
@@ -326,6 +333,14 @@ class UserConsumer(AsyncWebsocketConsumer):
         await self.channel_layer.group_add(self.room_group_name, self.channel_name)
         await self.accept()
 
+        # Flip presence to online and fan out to peers. Wrapped via
+        # database_sync_to_async because get_peer_user_ids hits the ORM.
+        changed, _ = await database_sync_to_async(presence.mark_online)(
+            self.user.id, self.channel_name
+        )
+        if changed:
+            await database_sync_to_async(presence.broadcast_presence)(self.user.id)
+
         logger.info("User WebSocket connected: user=%s", self.user.id)
 
     async def disconnect(self, close_code):
@@ -333,11 +348,41 @@ class UserConsumer(AsyncWebsocketConsumer):
             await self.channel_layer.group_discard(
                 self.room_group_name, self.channel_name
             )
+            changed, _ = await database_sync_to_async(presence.mark_offline)(
+                self.user.id, self.channel_name
+            )
+            if changed:
+                await database_sync_to_async(presence.broadcast_presence)(self.user.id)
             logger.info(
                 "User WebSocket disconnected: user=%s (code=%s)",
                 self.user.id,
                 close_code,
             )
+
+    async def receive(self, text_data):
+        """Route inbound frames — currently just the `visibility` ping."""
+        try:
+            payload = json.loads(text_data)
+            action = payload.get("action")
+            data = payload.get("data", {})
+        except (json.JSONDecodeError, AttributeError):
+            await self.send(
+                text_data=json.dumps({"type": "error", "message": "Invalid JSON"})
+            )
+            return
+
+        handler_name = self.USER_ACTION_HANDLERS.get(action)
+        if handler_name:
+            await getattr(self, handler_name)(data)
+
+    async def handle_visibility(self, data: dict):
+        """Mark this socket online (tab visible) or away (tab hidden)."""
+        visible = bool(data.get("visible", True))
+        changed, _ = await database_sync_to_async(presence.mark_visibility)(
+            self.user.id, self.channel_name, visible
+        )
+        if changed:
+            await database_sync_to_async(presence.broadcast_presence)(self.user.id)
 
     # ── Group event handlers ────────────────────────────────────────────────
 
@@ -397,6 +442,21 @@ class UserConsumer(AsyncWebsocketConsumer):
 
         await self.send(
             text_data=json.dumps({"type": "conversation_updated", "data": conversation})
+        )
+
+    async def presence_changed_event(self, event):
+        """Deliver a peer's presence transition to this client."""
+        await self.send(
+            text_data=json.dumps(
+                {
+                    "type": "presence_changed",
+                    "data": {
+                        "user_id": event["user_id"],
+                        "status": event["status"],
+                        "last_seen_at": event["last_seen_at"],
+                    },
+                }
+            )
         )
 
     async def invite_accepted_event(self, event):
