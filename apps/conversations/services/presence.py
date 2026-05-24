@@ -188,8 +188,18 @@ def get_peer_user_ids(user_id: int) -> list[int]:
 def broadcast_presence(user_id: int) -> None:
     """
     Push the current status of *user_id* to every conversation peer's
-    per-user channel. Failures are logged and swallowed so a Redis hiccup
-    can't break socket handling.
+    per-user channel AND to the user's own channel.
+
+    Including self matters for two reasons:
+      1. The account menu shows an "active check" beside the user's
+         current status. Without a self-broadcast, manual flips
+         ("Set as Away") never appear in the UI even though peers
+         correctly see the change.
+      2. A user with multiple tabs / devices keeps all of them in sync
+         when any one of them initiates a status change.
+
+    Failures are logged and swallowed so a Redis hiccup can't break
+    socket handling.
     """
     channel_layer = get_channel_layer()
     if channel_layer is None:
@@ -197,9 +207,9 @@ def broadcast_presence(user_id: int) -> None:
 
     try:
         payload = get_status(user_id)
-        peer_ids = get_peer_user_ids(user_id)
+        audience = [user_id, *get_peer_user_ids(user_id)]
         send = async_to_sync(channel_layer.group_send)
-        for pid in peer_ids:
+        for pid in audience:
             send(
                 f"user_{pid}",
                 {

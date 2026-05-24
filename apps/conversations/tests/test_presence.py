@@ -178,3 +178,44 @@ class PresenceEndpointTests(TestCase):
         self.assertEqual(response.data[str(self.bob.id)]["status"], "online")
         # Alice never marked online → offline.
         self.assertEqual(response.data[str(self.alice.id)]["status"], "offline")
+
+
+class PresenceBroadcastAudienceTests(TestCase):
+    """
+    Regression: `broadcast_presence` used to send only to peers, so a user
+    who flipped their own status via the UserMenu never received the event
+    — the menu's "active" checkmark never moved and the change looked
+    broken. The fix includes self in the audience.
+    """
+
+    def setUp(self):
+        self.fake = _FakeRedis()
+        self.redis_patcher = patch.object(presence, "_redis", return_value=self.fake)
+        self.redis_patcher.start()
+        self.addCleanup(self.redis_patcher.stop)
+
+        self.alice = User.objects.create_user(
+            username="alice", email="alice@example.com", password="x"
+        )
+        self.bob = User.objects.create_user(
+            username="bob", email="bob@example.com", password="x"
+        )
+        conv = Conversation.objects.create(created_by=self.alice)
+        Participant.objects.create(conversation=conv, user=self.alice)
+        Participant.objects.create(conversation=conv, user=self.bob)
+
+    def test_broadcast_includes_self_alongside_peers(self):
+        sent_to: list[str] = []
+
+        class _Layer:
+            async def group_send(self, group, _payload):
+                sent_to.append(group)
+
+        with patch.object(presence, "get_channel_layer", return_value=_Layer()):
+            presence.mark_online(self.alice.id, "ch")
+            presence.broadcast_presence(self.alice.id)
+
+        # Alice initiated the change and must receive it (so her menu
+        # updates), and Bob is a conversation peer so he gets it too.
+        self.assertIn(f"user_{self.alice.id}", sent_to)
+        self.assertIn(f"user_{self.bob.id}", sent_to)
