@@ -12,6 +12,11 @@ ALLOWED_HOSTS = env.list("ALLOWED_HOSTS")
 CORS_ALLOWED_ORIGINS = env.list("CORS_ALLOWED_ORIGINS")
 CORS_ALLOW_CREDENTIALS = True
 
+# Strict — must be set in env. Base defines a localhost default that's
+# inappropriate for prod, so override here without a fallback.
+BACKEND_URL = env.str("BACKEND_URL")
+FRONTEND_URL = env.str("FRONTEND_URL")
+
 # Strict security settings
 SECURE_SSL_REDIRECT = True
 SESSION_COOKIE_SECURE = True
