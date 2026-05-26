@@ -25,6 +25,8 @@ projects:
                 sync: false
               - key: SECRET_KEY
                 sync: false
+              - key: DATABASE_URL
+                sync: false
             region: singapore
             buildCommand: uv sync --frozen && uv cache prune --ci && python manage.py migrate --noinput && python manage.py collectstatic --noinput
             startCommand: uv run daphne -b 0.0.0.0 -p $PORT config.asgi:application
