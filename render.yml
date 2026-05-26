@@ -1,0 +1,38 @@
+# Exported from Render on 2026-05-26T23:23:14Z
+version: "1"
+projects:
+  - name: My project
+    environments:
+      - name: Production
+        services:
+          - type: web
+            name: convo-backend
+            runtime: python
+            repo: https://github.com/hedonarc/convo-backend
+            plan: free
+            envVars:
+              - key: PORT
+                sync: false
+              - key: FRONTEND_URL
+                sync: false
+              - key: CSRF_TRUSTED_ORIGINS
+                sync: false
+              - key: CORS_ALLOWED_ORIGINS
+                sync: false
+              - key: BACKEND_URL
+                sync: false
+              - key: ALLOWED_HOSTS
+                sync: false
+              - key: SECRET_KEY
+                sync: false
+            region: singapore
+            buildCommand: uv sync --frozen && uv cache prune --ci && python manage.py migrate --noinput && python manage.py collectstatic --noinput
+            startCommand: uv run daphne -b 0.0.0.0 -p $PORT config.asgi:application
+            autoDeployTrigger: "off"
+            buildFilter:
+              ignoredPaths:
+                - README.md
+                - CHANGELOG.md
+                - CONTRIBUTING.md
+                - .gitignore
+                - docs/**
