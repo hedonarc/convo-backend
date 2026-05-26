@@ -6,14 +6,21 @@ from django.core.mail import send_mail
 from django.template.loader import render_to_string
 from django.utils import timezone
 from rest_framework import status
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.conversations.api.serializers.conversation import ConversationSerializer
-from apps.conversations.api.serializers.invite import InviteCreateSerializer
+from apps.conversations.api.serializers.invite import (
+    InviteCreateSerializer,
+    InviteResolveSerializer,
+)
 from apps.conversations.models import Conversation, ConversationInvite, Participant
-from apps.conversations.services.realtime import broadcast_conversation_update
+from apps.conversations.services.realtime import (
+    broadcast_conversation_update,
+    notify_invite_accepted,
+)
+from utils.translations import t
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +49,7 @@ class InviteView(APIView):
             if recent_invite_exists:
                 return Response(
                     {
-                        "error": "You can only send one invite every 24 hours.",
+                        "error": t("invites.rate_limit_error"),
                         "available_after": available_after,
                     },
                     status=status.HTTP_429_TOO_MANY_REQUESTS,
@@ -88,7 +95,10 @@ class InviteView(APIView):
     def _send_invite_email(self, sender_user, email: str, token: str) -> None:
         """Render and dispatch the invite email. Failures are logged, not raised."""
         frontend_url = getattr(settings, "FRONTEND_URL", "http://localhost:3000")
-        invite_link = f"{frontend_url}/register?invite={token}&email={email}"
+        # Token-only URL — the backend resolves email + inviter from the token,
+        # so the link stays short, trustworthy, and doesn't leak the email in
+        # logs / browser history / shoulder-surfing.
+        invite_link = f"{frontend_url}/invite/{token}"
         logger.debug("invite_link: %s", invite_link)
 
         html_content = render_to_string(
@@ -100,12 +110,42 @@ class InviteView(APIView):
         )
 
         send_mail(
-            subject=f"{sender_user.username} invited you to Convo",
-            message=f"Join Convo and start chatting: {invite_link}",
+            subject=t("emails.invite_subject").format(
+                inviter_name=sender_user.username
+            ),
+            message=t("emails.invite_body").format(invite_link=invite_link),
             from_email=settings.DEFAULT_FROM_EMAIL,
             recipient_list=[email],
             html_message=html_content,
             fail_silently=True,
+        )
+
+
+class InviteResolveView(APIView):
+    """
+    Public lookup of an invite by its token. Used by the Accept Invite screen
+    to render inviter name + canonical email before the user authenticates.
+
+    Auth: AllowAny. The 64-char URL-safe token itself is the credential; only
+    a sliver of public-safe data is returned (no conversation contents).
+    """
+
+    permission_classes = [AllowAny]
+
+    def get(self, request, token):
+        try:
+            invite = ConversationInvite.objects.select_related("created_by").get(
+                token=token
+            )
+        except ConversationInvite.DoesNotExist:
+            return Response(
+                {"error": t("invites.invalid_token")},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        return Response(
+            InviteResolveSerializer(invite, context={"request": request}).data,
+            status=status.HTTP_200_OK,
         )
 
 
@@ -117,13 +157,13 @@ class InviteAcceptView(APIView):
             invite = ConversationInvite.objects.get(token=token)
         except ConversationInvite.DoesNotExist:
             return Response(
-                {"error": "Invalid invite token"},
+                {"error": t("invites.invalid_token")},
                 status=status.HTTP_404_NOT_FOUND,
             )
 
         if invite.is_accepted:
             return Response(
-                {"error": "Invite already accepted"},
+                {"error": t("invites.already_accepted")},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
@@ -138,6 +178,10 @@ class InviteAcceptView(APIView):
         # Notify both participants — sender's sidebar swaps the pending panel
         # for a regular chat; new participant sees the conversation appear.
         broadcast_conversation_update(invite.conversation)
+        # Inviter-only celebratory notification — drives the "X joined the
+        # conversation" toast on the sender's side. Fires after the sidebar
+        # update so the conversation row exists before the toast points at it.
+        notify_invite_accepted(invite, request.user)
 
         return Response(
             ConversationSerializer(invite.conversation).data,

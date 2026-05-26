@@ -155,3 +155,9 @@ CHANNEL_LAYERS = {
         },
     },
 }
+
+# Used by serializers (notably UserSerializer) to build absolute media URLs
+# without an HTTP request in scope — primarily WebSocket fanout
+# (broadcast_conversation_update, notify_invite_accepted) where DRF's
+# request.build_absolute_uri can't run. Override in production via env.
+BACKEND_URL = env.str("BACKEND_URL", default="http://localhost:8000")

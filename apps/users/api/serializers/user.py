@@ -1,3 +1,4 @@
+from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.contrib.auth.password_validation import validate_password
 from rest_framework import serializers
@@ -39,8 +40,19 @@ class UserSerializer(serializers.ModelSerializer):
     def to_representation(self, instance):
         data = super().to_representation(instance)
 
-        request = self.context.get("request")
-        if instance.avatar and request:
-            data["avatar"] = request.build_absolute_uri(instance.avatar.url)
+        if instance.avatar:
+            request = self.context.get("request")
+            if request is not None:
+                data["avatar"] = request.build_absolute_uri(instance.avatar.url)
+            else:
+                # No HTTP request in scope — typically a WebSocket fanout
+                # (broadcast_conversation_update, notify_invite_accepted).
+                # Fall back to the configured BACKEND_URL so the frontend
+                # still receives an absolute URL it can fetch from any
+                # origin, instead of a relative path it would resolve
+                # against its own host and 404.
+                backend_url = getattr(settings, "BACKEND_URL", "").rstrip("/")
+                if backend_url:
+                    data["avatar"] = f"{backend_url}{instance.avatar.url}"
 
         return data

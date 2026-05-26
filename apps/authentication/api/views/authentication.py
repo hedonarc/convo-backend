@@ -106,7 +106,7 @@ class TokenRefreshCookieView(TokenRefreshView):
 
         if not raw_refresh:
             return Response(
-                {"detail": "Refresh token missing."},
+                {"detail": t("auth.refresh_token_missing")},
                 status=status.HTTP_401_UNAUTHORIZED,
             )
 
@@ -120,5 +120,5 @@ class TokenRefreshCookieView(TokenRefreshView):
 
         # Move tokens from JSON body → httpOnly cookies
         _set_auth_cookies(response, response.data)
-        response.data = {"message": "Token refreshed."}
+        response.data = {"message": t("auth.token_refreshed")}
         return response

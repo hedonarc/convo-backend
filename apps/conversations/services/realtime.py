@@ -14,7 +14,8 @@ from channels.layers import get_channel_layer
 
 from apps.conversations.api.serializers.conversation import ConversationSerializer
 from apps.conversations.api.serializers.message import MessageSerializer
-from apps.conversations.models import Conversation, Message
+from apps.conversations.models import Conversation, ConversationInvite, Message
+from apps.users.api.serializers.user import UserSerializer
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +50,36 @@ def broadcast_conversation_update(conversation: Conversation) -> None:
         logger.exception(
             "Failed to broadcast conversation update for conversation=%s",
             conversation.id,
+        )
+
+
+def notify_invite_accepted(invite: ConversationInvite, acceptor_user) -> None:
+    """
+    Push a one-shot `invite_accepted` frame to the inviter's per-user channel.
+
+    Distinct from `broadcast_conversation_update` — that event fans out to
+    every participant and drives the sidebar. This one is a celebratory
+    notification meant only for the original inviter, so they can show a
+    toast like "🎉 Khizer joined the conversation" without the new
+    participant seeing it about themselves.
+    """
+    channel_layer = get_channel_layer()
+    if channel_layer is None:
+        return
+
+    try:
+        async_to_sync(channel_layer.group_send)(
+            f"user_{invite.created_by_id}",
+            {
+                "type": "invite_accepted_event",
+                "acceptor": UserSerializer(acceptor_user).data,
+                "conversation_id": invite.conversation_id,
+            },
+        )
+    except Exception:
+        logger.exception(
+            "Failed to notify invite acceptance for invite=%s",
+            invite.id,
         )
 
 

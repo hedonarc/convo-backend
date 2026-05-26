@@ -117,6 +117,45 @@ class ConversationApiTests(APITestCase):
             response.data["error"], "You can only send one invite every 24 hours."
         )
 
+    def test_invite_resolve_returns_inviter_and_account_status(self):
+        """
+        GET /api/invites/<token>/ exposes inviter + canonical email without
+        auth, so the Accept Invite screen can render before the user logs in.
+        """
+        self._authenticate(self.user)
+        invite_email = "newcomer@example.com"
+        self.client.post(self.invite_url, {"email": invite_email})
+        token = ConversationInvite.objects.get(email=invite_email).token
+
+        # Resolve without authentication — token is the credential.
+        self.client.cookies.clear()
+        response = self.client.get(f"/api/invites/{token}/")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["email"], invite_email)
+        self.assertEqual(response.data["inviter"]["username"], self.user.username)
+        self.assertFalse(response.data["is_accepted"])
+        self.assertFalse(response.data["has_account"])
+        self.assertIsNotNone(response.data["conversation_id"])
+        # Sensitive fields must NOT leak.
+        self.assertNotIn("password", response.data["inviter"])
+
+    def test_invite_resolve_has_account_true_when_user_exists(self):
+        """has_account flips to True when a User already owns the invited email."""
+        self._authenticate(self.user)
+        # other_user already exists with john@example.com.
+        self.client.post(self.invite_url, {"email": "john@example.com"})
+        token = ConversationInvite.objects.get(email="john@example.com").token
+
+        response = self.client.get(f"/api/invites/{token}/")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(response.data["has_account"])
+
+    def test_invite_resolve_unknown_token_returns_404(self):
+        response = self.client.get("/api/invites/not-a-real-token/")
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
     def test_invite_resend_after_cooldown_refreshes_window(self):
         """
         Once the 24h window has elapsed, re-inviting the same recipient sends a
