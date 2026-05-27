@@ -69,14 +69,32 @@ def _check_redis() -> None:
         return
 
     host = hosts[0]
-    url = host if isinstance(host, str) else None
     try:
         import redis  # transitively available via channels-redis
 
-        client = redis.from_url(url) if url else redis.Redis(**host)
+        # channels-redis accepts three host shapes — handle all of them.
+        # The tuple form is the most common in dev configs; the old probe
+        # only handled str + dict and crashed the startup log with
+        # "argument after ** must be a mapping, not tuple" on tuple hosts.
+        if isinstance(host, str):
+            client = redis.from_url(host)
+            label = _redact(host)
+        elif isinstance(host, dict):
+            client = redis.Redis(**host)
+            label = "<dict>"
+        elif isinstance(host, tuple | list) and len(host) >= 2:
+            client = redis.Redis(host=host[0], port=int(host[1]))
+            label = f"{host[0]}:{host[1]}"
+        else:
+            logger.warning(
+                "[startup] redis host has unsupported shape: %r — skipping check",
+                host,
+            )
+            return
+
         client.ping()
         client.close()
-        logger.info("[startup] redis connected: %s", _redact(url) if url else "<dict>")
+        logger.info("[startup] redis connected: %s", label)
     except Exception as exc:
         logger.error("[startup] redis connection FAILED: %s", exc)
 
