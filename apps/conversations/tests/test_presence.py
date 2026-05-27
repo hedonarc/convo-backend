@@ -10,10 +10,23 @@ User = get_user_model()
 
 
 class _FakeRedis:
-    """Minimal in-memory stand-in for the Redis hash ops presence.py uses."""
+    """
+    Minimal in-memory stand-in for the Redis ops presence.py uses.
+
+    Holds three kinds of data behind a single `store` dict:
+      - hashes (dict-of-dicts) — `presence:user:<id>`
+      - strings — `presence:conn:<id>:<channel>`
+      - sorted sets (dict[member]=score) — `presence:conns:<id>` (index)
+
+    TTLs are ignored; tests don't advance time. Status-recompute logic in
+    presence.py prunes by score (ZSET), so tests that need to simulate
+    expiry can ZREM directly or set a score in the past.
+    """
 
     def __init__(self):
-        self.store: dict[str, dict[str, str]] = {}
+        self.store: dict = {}
+
+    # ── Hash ops ──────────────────────────────────────────────────────────
 
     def hset(self, key, field=None, value=None, mapping=None):
         bucket = self.store.setdefault(key, {})
@@ -28,15 +41,72 @@ class _FakeRedis:
     def hgetall(self, key):
         return dict(self.store.get(key, {}))
 
-    def hvals(self, key):
-        return list(self.store.get(key, {}).values())
+    # ── String ops ────────────────────────────────────────────────────────
 
-    def hexists(self, key, field):
-        return field in self.store.get(key, {})
+    def set(self, key, value, ex=None):  # noqa: ARG002 — ex ignored in tests
+        self.store[key] = str(value)
 
-    def hdel(self, key, field):
-        if key in self.store:
-            self.store[key].pop(field, None)
+    def get(self, key):
+        value = self.store.get(key)
+        # Defensively avoid returning hash/zset structures as strings.
+        if isinstance(value, dict):
+            return None
+        return value
+
+    def mget(self, keys):
+        return [self.get(k) for k in keys]
+
+    def delete(self, *keys):
+        for k in keys:
+            self.store.pop(k, None)
+
+    def exists(self, *keys):
+        return sum(1 for k in keys if k in self.store)
+
+    def expire(self, key, _seconds):
+        # TTL is a real-Redis concern. The fake doesn't model time, so
+        # EXPIRE is a no-op when the key exists and returns 0 otherwise
+        # — matches the contract the production code relies on (it
+        # ignores EXPIRE's return value).
+        return 1 if key in self.store else 0
+
+    # ── Sorted-set ops ────────────────────────────────────────────────────
+
+    def zadd(self, key, mapping):
+        bucket = self.store.setdefault(key, {})
+        if not isinstance(bucket, dict):
+            raise TypeError(f"WRONGTYPE on {key}")
+        for member, score in mapping.items():
+            bucket[member] = float(score)
+
+    def zrange(self, key, start, end):
+        bucket = self.store.get(key, {})
+        members = sorted(bucket.items(), key=lambda kv: kv[1])
+        names = [m for m, _ in members]
+        if end == -1:
+            return names[start:]
+        return names[start : end + 1]
+
+    def zrem(self, key, *members):
+        bucket = self.store.get(key)
+        if not isinstance(bucket, dict):
+            return
+        for m in members:
+            bucket.pop(m, None)
+        if not bucket:
+            self.store.pop(key, None)
+
+    def zremrangebyscore(self, key, min_score, max_score):
+        bucket = self.store.get(key)
+        if not isinstance(bucket, dict):
+            return
+        to_remove = [m for m, s in bucket.items() if min_score <= s <= max_score]
+        for m in to_remove:
+            bucket.pop(m, None)
+        if not bucket:
+            self.store.pop(key, None)
+
+    # ── Pipeline ──────────────────────────────────────────────────────────
 
     def pipeline(self):
         outer = self
@@ -125,6 +195,62 @@ class PresenceServiceTests(TestCase):
     def test_visibility_on_unknown_channel_is_noop(self):
         changed, _ = presence.mark_visibility(self.alice.id, "ghost_channel", False)
         self.assertFalse(changed)
+
+    def test_expired_index_entries_are_pruned_on_recompute(self):
+        """
+        Regression: stale connections left over from prior sessions (browser
+        crash, dev-server kill, missed disconnect) used to accumulate in
+        Redis forever — every one of them was treated as `online`, so the
+        user-level status was permanently pinned to ONLINE and the
+        `_persist_status` no-op guard suppressed all broadcasts. Visibility
+        flips silently dropped.
+
+        Now: every recompute checks each indexed channel for an
+        actual per-channel key. Members whose key has TTL'd out get
+        pruned from the index in the same pass. We simulate the
+        TTL-expired case by leaving the ZSET member behind while
+        omitting (or deleting) the per-channel key.
+        """
+        presence.mark_online(self.alice.id, "live_tab")
+
+        # Plant a zombie: it's in the index, but its per-channel key
+        # never existed (or has already expired). This is what the
+        # state looks like in real Redis when the per-channel key's
+        # TTL runs out before the index member is touched again.
+        index_key = presence._conns_index_key(self.alice.id)
+        self.fake.zadd(index_key, {"zombie_tab": 0})
+
+        # Flip the live tab away — without pruning, the zombie would
+        # be treated as a live ONLINE channel and the user-level
+        # status would stay pinned to ONLINE, suppressing the broadcast.
+        changed, payload = presence.mark_visibility(self.alice.id, "live_tab", False)
+
+        self.assertTrue(changed)
+        self.assertEqual(payload["status"], "away")
+        # And the zombie should be gone from the index.
+        self.assertNotIn("zombie_tab", self.fake.zrange(index_key, 0, -1))
+
+    def test_heartbeat_preserves_status_and_keeps_connection_live(self):
+        presence.mark_online(self.alice.id, "ch_a")
+        presence.mark_visibility(self.alice.id, "ch_a", False)
+        self.assertEqual(presence.get_status(self.alice.id)["status"], "away")
+
+        presence.heartbeat(self.alice.id, "ch_a")
+
+        # Status is unchanged after a heartbeat — heartbeats are pure
+        # TTL refreshes, never state transitions.
+        self.assertEqual(presence.get_status(self.alice.id)["status"], "away")
+        # And the connection is still tracked in the index.
+        self.assertIn(
+            "ch_a", self.fake.zrange(presence._conns_index_key(self.alice.id), 0, -1)
+        )
+
+    def test_heartbeat_on_dead_channel_is_noop(self):
+        # No mark_online for this channel — heartbeat shouldn't resurrect it.
+        presence.heartbeat(self.alice.id, "never_connected")
+        self.assertEqual(
+            self.fake.zrange(presence._conns_index_key(self.alice.id), 0, -1), []
+        )
 
     def test_get_peer_user_ids_only_includes_conversation_partners(self):
         # Alice ↔ Bob share a conversation; Charlie does not.

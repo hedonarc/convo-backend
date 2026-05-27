@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 
@@ -322,6 +323,13 @@ class UserConsumer(AsyncWebsocketConsumer):
         "visibility": "handle_visibility",
     }
 
+    # Keep meaningfully smaller than presence.PRESENCE_TTL_SECONDS so the
+    # connection's TTL never lapses between beats. With TTL=300s and
+    # interval=240s, the connection survives one missed beat (60s grace).
+    # Sized to keep heartbeat Redis ops cheap on metered providers like
+    # Upstash — see presence module docstring for the cost model.
+    HEARTBEAT_INTERVAL_SECONDS = 240
+
     async def connect(self):
         self.user = self.scope["user"]
 
@@ -342,9 +350,20 @@ class UserConsumer(AsyncWebsocketConsumer):
         if changed:
             await database_sync_to_async(presence.broadcast_presence)(self.user.id)
 
+        # Background task that refreshes the Redis TTL on this connection's
+        # presence keys. Without it, an idle tab would be swept out by the
+        # TTL guard and stop being counted in the user's status.
+        self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
+
         logger.info("User WebSocket connected: user=%s", self.user.id)
 
     async def disconnect(self, close_code):
+        # Stop the heartbeat *first* so a refresh can't race with the
+        # offline-mark below and resurrect the connection in Redis.
+        task = getattr(self, "_heartbeat_task", None)
+        if task is not None:
+            task.cancel()
+
         if hasattr(self, "room_group_name"):
             await self.channel_layer.group_discard(
                 self.room_group_name, self.channel_name
@@ -359,6 +378,25 @@ class UserConsumer(AsyncWebsocketConsumer):
                 self.user.id,
                 close_code,
             )
+
+    async def _heartbeat_loop(self):
+        """Refresh the per-connection TTL on a timer while the socket is open."""
+        try:
+            while True:
+                await asyncio.sleep(self.HEARTBEAT_INTERVAL_SECONDS)
+                try:
+                    await database_sync_to_async(presence.heartbeat)(
+                        self.user.id, self.channel_name
+                    )
+                except Exception:
+                    # Redis hiccups shouldn't kill the socket — the next
+                    # beat (or any user event) will catch up.
+                    logger.exception(
+                        "Presence heartbeat failed for user=%s", self.user.id
+                    )
+        except asyncio.CancelledError:
+            # Expected on disconnect — let it propagate so the task ends.
+            raise
 
     async def receive(self, text_data):
         """Route inbound frames — currently just the `visibility` ping."""

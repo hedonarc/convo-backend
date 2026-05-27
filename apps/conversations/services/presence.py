@@ -1,15 +1,36 @@
 """
 Redis-backed user presence — ephemeral, no database persistence.
 
-Each user has two Redis keys:
-  - presence:user:<id>  (hash)  fields: status, last_seen_at
-  - presence:conns:<id> (hash)  field per active socket: channel_name -> conn_status
-    (conn_status is "online" or "away" — the per-tab visibility state)
+Each user has three Redis keys:
+  - presence:user:<id>            (hash)    fields: status, last_seen_at
+  - presence:conns:<id>           (zset)    member: channel_name (live channels index)
+  - presence:conn:<id>:<channel>  (string)  value: "online" | "away", TTL bound
 
-User status is the strongest state across all connections:
+User status is the strongest state across all live connections:
     online  if any tab is online
     away    elif any tab is away
-    offline if no connections at all
+    offline if no live connections
+
+Why three keys? The zset is the *index* of channel names this user has
+ever had. The per-channel string holds that connection's visibility state
+and is bound to a Redis TTL so it self-destructs if the consumer dies
+without firing disconnect (browser crash, dev-server kill, OOM). On every
+status read, recompute checks each indexed channel for key existence —
+expired ones get pruned from the index in the same pass. The zset score
+is unused for liveness (it carries the original expiration but isn't
+refreshed on heartbeat) — actual liveness is determined by the per-channel
+key's TTL.
+
+The consumer is expected to call `heartbeat()` on a periodic loop while
+the socket is open. Each heartbeat is **one** Redis op (EXPIRE on the
+per-channel key) — chosen to keep the steady-state cost small on metered
+Redis providers (Upstash free tier is 10k commands/day, so a 4-minute
+heartbeat costs ~360 ops/user/day at 24h continuous, ~60 at typical 4h).
+
+Tuning knobs:
+  PRESENCE_TTL_SECONDS    — how long a connection survives without a beat
+  HEARTBEAT defined in    — consumer side (UserConsumer.HEARTBEAT_INTERVAL_SECONDS)
+  Keep heartbeat < TTL/2  — survives at least one missed beat.
 
 Presence is ephemeral by design: a Redis crash or server restart leaves
 everyone as offline until they reconnect, which is the same effect as a
@@ -26,6 +47,7 @@ from collections.abc import Iterable
 from datetime import UTC, datetime
 import logging
 import os
+import time
 
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
@@ -38,6 +60,14 @@ logger = logging.getLogger(__name__)
 ONLINE = "online"
 AWAY = "away"
 OFFLINE = "offline"
+
+# How long a connection key lives without a heartbeat. Picked to keep
+# Upstash-style metered Redis spend bounded — see module docstring.
+# Trade-off: a browser crash takes up to TTL seconds before peers see the
+# user flip to offline (or the next recompute prunes the entry, whichever
+# fires first). Keep the consumer's HEARTBEAT_INTERVAL_SECONDS at <50% of
+# this so a single missed beat doesn't drop the connection.
+PRESENCE_TTL_SECONDS = 300
 
 # Mirrors CHANNEL_LAYERS["default"]["CONFIG"]["hosts"] in settings/base.py.
 # Kept hardcoded for now to avoid pulling channels_redis internals; if the
@@ -69,8 +99,12 @@ def _user_key(user_id: int) -> str:
     return f"presence:user:{user_id}"
 
 
-def _conns_key(user_id: int) -> str:
+def _conns_index_key(user_id: int) -> str:
     return f"presence:conns:{user_id}"
+
+
+def _conn_key(user_id: int, channel_name: str) -> str:
+    return f"presence:conn:{user_id}:{channel_name}"
 
 
 def _now_iso() -> str:
@@ -105,14 +139,62 @@ def _persist_status(user_id: int, status: str) -> tuple[bool, dict]:
     }
 
 
+def _record_channel(user_id: int, channel_name: str, status: str) -> None:
+    """
+    Register a channel with the index and write its per-channel status
+    with a bounded TTL. Two ops — only called on actual transitions
+    (mark_online / mark_visibility / mark_offline), never per-heartbeat.
+    """
+    r = _redis()
+    r.set(_conn_key(user_id, channel_name), status, ex=PRESENCE_TTL_SECONDS)
+    # Score is informational (last-transition timestamp). Liveness is
+    # decided by per-channel key existence at recompute time, not by
+    # score — that's why heartbeat doesn't touch the zset.
+    r.zadd(_conns_index_key(user_id), {channel_name: time.time()})
+
+
+def _recompute_user_status(user_id: int) -> tuple[bool, dict]:
+    """
+    Read the indexed channels, check which per-channel keys are still
+    alive, prune any that aren't, and persist the computed user-level
+    status. The single place that decides what the world sees — `mark_*`
+    all funnel through this so the live/stale boundary is enforced
+    uniformly.
+
+    Op cost: ZRANGE + MGET + (ZREM if stale) + HGET + HSET = 4–5 ops.
+    """
+    r = _redis()
+    index_key = _conns_index_key(user_id)
+    channels = r.zrange(index_key, 0, -1)
+    if not channels:
+        return _persist_status(user_id, OFFLINE)
+
+    statuses = r.mget([_conn_key(user_id, c) for c in channels])
+    live: list[str] = []
+    stale: list[str] = []
+    for chan, status in zip(channels, statuses, strict=True):
+        if status is None:
+            stale.append(chan)
+        else:
+            live.append(status)
+
+    # Garbage-collect ZSET members whose per-channel key has expired.
+    # Conditional so we don't burn an op on the steady-state happy path.
+    if stale:
+        r.zrem(index_key, *stale)
+
+    if not live:
+        return _persist_status(user_id, OFFLINE)
+    return _persist_status(user_id, _compute_user_status(live))
+
+
 # ── Mutators ────────────────────────────────────────────────────────────────
 
 
 def mark_online(user_id: int, channel_name: str) -> tuple[bool, dict]:
     """Track a new socket as online and recompute user status."""
-    r = _redis()
-    r.hset(_conns_key(user_id), channel_name, ONLINE)
-    return _persist_status(user_id, ONLINE)
+    _record_channel(user_id, channel_name, ONLINE)
+    return _recompute_user_status(user_id)
 
 
 def mark_visibility(
@@ -120,22 +202,34 @@ def mark_visibility(
 ) -> tuple[bool, dict]:
     """
     Update a single connection's visibility (tab focused vs hidden) and
-    recompute the user-level status. No-op for unknown channels.
+    recompute the user-level status. No-op for unknown / expired channels.
     """
     r = _redis()
-    if not r.hexists(_conns_key(user_id), channel_name):
+    if r.get(_conn_key(user_id, channel_name)) is None:
         return False, get_status(user_id)
-    r.hset(_conns_key(user_id), channel_name, ONLINE if visible else AWAY)
-    statuses = r.hvals(_conns_key(user_id))
-    return _persist_status(user_id, _compute_user_status(statuses))
+    _record_channel(user_id, channel_name, ONLINE if visible else AWAY)
+    return _recompute_user_status(user_id)
+
+
+def heartbeat(user_id: int, channel_name: str) -> None:
+    """
+    Refresh the TTL on a live connection without changing its status.
+    Exactly **one** Redis op (EXPIRE) — this is the dominant cost in
+    steady state, so it's deliberately minimal.
+
+    If the key has already expired EXPIRE returns 0 (no-op); we don't
+    care, the next event or fresh connect will reestablish presence
+    through mark_online.
+    """
+    _redis().expire(_conn_key(user_id, channel_name), PRESENCE_TTL_SECONDS)
 
 
 def mark_offline(user_id: int, channel_name: str) -> tuple[bool, dict]:
-    """Drop a socket; if it was the last one, flip user to offline."""
+    """Drop a socket; if it was the last live one, flip user to offline."""
     r = _redis()
-    r.hdel(_conns_key(user_id), channel_name)
-    statuses = r.hvals(_conns_key(user_id))
-    return _persist_status(user_id, _compute_user_status(statuses))
+    r.delete(_conn_key(user_id, channel_name))
+    r.zrem(_conns_index_key(user_id), channel_name)
+    return _recompute_user_status(user_id)
 
 
 # ── Readers ─────────────────────────────────────────────────────────────────
