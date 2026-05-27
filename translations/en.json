@@ -36,7 +36,8 @@
   "invites": {
     "rate_limit_error": "You can only send one invite every 24 hours.",
     "invalid_token": "Invalid invite token",
-    "already_accepted": "Invite already accepted"
+    "already_accepted": "Invite already accepted",
+    "email_failed": "We couldn't send the invite email. Please try again in a moment."
   },
   "emails": {
     "invite_subject": "{inviter_name} invited you to Convo",

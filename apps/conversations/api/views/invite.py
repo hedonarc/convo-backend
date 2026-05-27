@@ -1,8 +1,10 @@
 from datetime import timedelta
 import logging
+from smtplib import SMTPException
 
 from django.conf import settings
 from django.core.mail import send_mail
+from django.db import transaction
 from django.template.loader import render_to_string
 from django.utils import timezone
 from rest_framework import status
@@ -55,12 +57,21 @@ class InviteView(APIView):
                     status=status.HTTP_429_TOO_MANY_REQUESTS,
                 )
 
-            # Re-send the email as a reminder without creating new rows.
-            self._send_invite_email(
-                request.user,
-                email,
-                existing_invite.token,
-            )
+            # Reminder path — only bump `invite_count` if SMTP actually
+            # accepted the message. A failure surfaces as 502 instead of a
+            # silent 200 lie.
+            try:
+                self._send_invite_email(
+                    request.user,
+                    email,
+                    existing_invite.token,
+                )
+            except (SMTPException, OSError):
+                logger.exception("Reminder invite email failed for %s", email)
+                return Response(
+                    {"error": t("invites.email_failed")},
+                    status=status.HTTP_502_BAD_GATEWAY,
+                )
 
             existing_invite.invite_count += 1
             existing_invite.save(update_fields=["invite_count", "updated_at"])
@@ -73,16 +84,30 @@ class InviteView(APIView):
                 status=status.HTTP_200_OK,  # 200, not 201 — nothing was created
             )
 
-        conversation = Conversation.objects.create(created_by=request.user)
-        Participant.objects.create(conversation=conversation, user=request.user)
-
-        invite = ConversationInvite.objects.create(
-            email=email,
-            conversation=conversation,
-            created_by=request.user,
-        )
-
-        self._send_invite_email(request.user, email, invite.token)
+        # New-invite path — atomic so the conversation / participant / invite
+        # rows and the email succeed together. If SMTP raises, the DB write
+        # rolls back and the client sees a 502 instead of an orphan invite
+        # the recipient will never hear about. `invite_count` is bumped to 1
+        # *after* a successful send so the model field always reflects the
+        # number of emails that actually left the building.
+        try:
+            with transaction.atomic():
+                conversation = Conversation.objects.create(created_by=request.user)
+                Participant.objects.create(conversation=conversation, user=request.user)
+                invite = ConversationInvite.objects.create(
+                    email=email,
+                    conversation=conversation,
+                    created_by=request.user,
+                )
+                self._send_invite_email(request.user, email, invite.token)
+                invite.invite_count = 1
+                invite.save(update_fields=["invite_count"])
+        except (SMTPException, OSError):
+            logger.exception("New invite email failed for %s", email)
+            return Response(
+                {"error": t("invites.email_failed")},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
 
         return Response(
             {
@@ -93,7 +118,12 @@ class InviteView(APIView):
         )
 
     def _send_invite_email(self, sender_user, email: str, token: str) -> None:
-        """Render and dispatch the invite email. Failures are logged, not raised."""
+        """Render and dispatch the invite email.
+
+        Raises `smtplib.SMTPException` / `OSError` on failure — callers wrap
+        in try/except so a missing SMTP server, a wrong app password, or a
+        network blip surfaces as a 502 instead of being silently swallowed.
+        """
         frontend_url = getattr(settings, "FRONTEND_URL", "http://localhost:3000")
         # Token-only URL — the backend resolves email + inviter from the token,
         # so the link stays short, trustworthy, and doesn't leak the email in
@@ -117,7 +147,7 @@ class InviteView(APIView):
             from_email=settings.DEFAULT_FROM_EMAIL,
             recipient_list=[email],
             html_message=html_content,
-            fail_silently=True,
+            fail_silently=False,
         )
 
 

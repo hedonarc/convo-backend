@@ -20,7 +20,11 @@ class ConversationInvite(models.Model):
     is_accepted = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
-    invite_count = models.IntegerField(default=1)
+    # Number of times the invite email was *successfully* dispatched. Starts
+    # at 0; the view bumps it to 1 inside the same transaction that wraps
+    # send_mail, so a row only ever exists with count >= 1. Reminder sends
+    # bump it further — also only on a successful SMTP exchange.
+    invite_count = models.IntegerField(default=0)
 
     class Meta:
         ordering = ["-created_at"]
