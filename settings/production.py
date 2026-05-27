@@ -58,11 +58,9 @@ STORAGES = {
     },
 }
 
-# Email Configuration (Resend via Anymail, over HTTPS)
-EMAIL_BACKEND = "anymail.backends.resend.EmailBackend"
+# Email Configuration (Brevo via Anymail, over HTTPS)
+EMAIL_BACKEND = "anymail.backends.brevo.EmailBackend"
 ANYMAIL = {
-    "RESEND_API_KEY": env.str("RESEND_API_KEY"),
+    "BREVO_API_KEY": env.str("BREVO_API_KEY"),
 }
-DEFAULT_FROM_EMAIL = env.str(
-    "DEFAULT_FROM_EMAIL", default="Convo <onboarding@resend.dev>"
-)
+DEFAULT_FROM_EMAIL = env.str("DEFAULT_FROM_EMAIL")

@@ -29,7 +29,7 @@ projects:
                 sync: false
               - key: REDIS_URL
                 sync: false
-              - key: RESEND_API_KEY
+              - key: BREVO_API_KEY
                 sync: false
               - key: DEFAULT_FROM_EMAIL
                 sync: false
