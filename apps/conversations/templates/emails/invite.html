@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -43,6 +43,17 @@
             color: #4b5563;
             word-break: break-word;
         }
+        /*
+          Note: the CTA button uses an inline `style` attribute on the
+          anchor itself (not this class) so it survives Outlook desktop
+          stripping the <style> block. This class is kept as a safety
+          net for clients that DO read <style>, in case the inline
+          attribute is ever forgotten on a future edit.
+
+          Hover states were intentionally removed — email clients don't
+          render them reliably and CSS pseudo-classes are a minor
+          spam-filter signal.
+        */
         .button {
             display: inline-block;
             background-color: #f56565; /* Brand color */
@@ -52,10 +63,12 @@
             padding: 12px 24px;
             border-radius: 6px;
             font-size: 16px;
-            transition: background-color 0.2s;
         }
-        .button:hover {
-            background-color: #e53e3e;
+        .ignore-note {
+            font-size: 13px;
+            color: #9ca3af;
+            margin-top: 30px;
+            line-height: 1.5;
         }
         .footer {
             background-color: #f9fafb;
@@ -79,6 +92,17 @@
     </style>
 </head>
 <body>
+    <!--
+      Preheader — the grey preview text rendered next to the subject in
+      Gmail / Outlook / Apple Mail inboxes. Hidden inside the body via
+      zero-dimension styling so it never shows up in the rendered email
+      itself. Without this, clients grab the first visible text (`Join
+      Convo`), which duplicates the subject and wastes the preview line.
+    -->
+    <div style="display:none;font-size:1px;color:#f9fafb;line-height:1px;max-height:0;max-width:0;opacity:0;overflow:hidden;">
+        {{ inviter_name }} wants to chat with you on Convo — accept the invite to start the conversation.
+    </div>
+
     <div class="container">
         <div class="header">
             <h1>Join Convo</h1>
@@ -89,16 +113,30 @@
             <p>
               Join Convo to reply and continue the conversation.
             </p>
-            
-            <a href="{{ invite_link }}" class="button">Accept Invitation</a>
-            
+
+            <!--
+              Bulletproof button — styles inlined on the <a> so the CTA
+              still renders correctly in Outlook desktop, which sometimes
+              ignores <style> blocks. Keeps the .button class as a
+              fallback for consistency with the rest of the template.
+            -->
+            <a href="{{ invite_link }}"
+               class="button"
+               style="display:inline-block;background-color:#f56565;color:#ffffff;text-decoration:none;font-weight:600;padding:12px 24px;border-radius:6px;font-size:16px;">
+                Accept Invitation
+            </a>
+
             <div class="fallback-link">
                 <p>If the button doesn't work, you can copy and paste this link into your browser:</p>
                 <a href="{{ invite_link }}">{{ invite_link }}</a>
             </div>
+
+            <p class="ignore-note">
+                If you didn't expect this invite, you can safely ignore this email — nothing will be created until you click the button above and accept invitation and register.
+            </p>
         </div>
         <div class="footer">
-            <p>&copy; 2026 Convo. All rights reserved.</p>
+            <p>&copy; {% now "Y" %} Convo. All rights reserved.</p>
         </div>
     </div>
 </body>
