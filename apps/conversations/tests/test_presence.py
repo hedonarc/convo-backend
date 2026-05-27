@@ -41,6 +41,15 @@ class _FakeRedis:
     def hgetall(self, key):
         return dict(self.store.get(key, {}))
 
+    def hdel(self, key, *fields):
+        bucket = self.store.get(key)
+        if not isinstance(bucket, dict):
+            return
+        for f in fields:
+            bucket.pop(f, None)
+        if not bucket:
+            self.store.pop(key, None)
+
     # ── String ops ────────────────────────────────────────────────────────
 
     def set(self, key, value, ex=None):  # noqa: ARG002 — ex ignored in tests
@@ -251,6 +260,93 @@ class PresenceServiceTests(TestCase):
         self.assertEqual(
             self.fake.zrange(presence._conns_index_key(self.alice.id), 0, -1), []
         )
+
+    # ── Manual-override behaviour ───────────────────────────────────────────
+
+    def test_manual_away_survives_tab_focus_cycle(self):
+        """
+        Regression: user sets away via the menu, switches to another tab,
+        comes back — the focus event used to reset them to online. Now
+        the manual override sticks until they explicitly clear it.
+        """
+        presence.mark_online(self.alice.id, "ch_a")
+        presence.set_manual_away(self.alice.id, "ch_a")
+        self.assertEqual(presence.get_status(self.alice.id)["status"], "away")
+
+        # Tab blurs — visibility:false. User already considered away,
+        # status stays away.
+        presence.mark_visibility(self.alice.id, "ch_a", False)
+        self.assertEqual(presence.get_status(self.alice.id)["status"], "away")
+
+        # Tab refocuses — visibility:true. WITHOUT the manual override
+        # this would flip the user back to online; that was the bug.
+        presence.mark_visibility(self.alice.id, "ch_a", True)
+        self.assertEqual(presence.get_status(self.alice.id)["status"], "away")
+
+    def test_manual_away_survives_ws_reconnect(self):
+        """
+        Same intent persistence, different trigger: a network blip or
+        hot-reload restarts the WS, which calls mark_online for a fresh
+        channel. The manual_away flag is on the user key, not the channel
+        key, so it survives reconnects.
+        """
+        presence.mark_online(self.alice.id, "ch_a")
+        presence.set_manual_away(self.alice.id, "ch_a")
+
+        # Old socket drops, new socket connects with a different channel.
+        presence.mark_offline(self.alice.id, "ch_a")
+        # Note: mark_offline took alice fully offline → manual override
+        # was cleared. Simulate the more realistic case where the user
+        # had multiple tabs open and only one of them reconnected.
+        presence.mark_online(self.alice.id, "ch_other_tab")
+        presence.set_manual_away(self.alice.id, "ch_other_tab")
+        presence.mark_online(self.alice.id, "ch_reconnected")
+
+        self.assertEqual(presence.get_status(self.alice.id)["status"], "away")
+
+    def test_clear_manual_away_returns_user_to_auto(self):
+        presence.mark_online(self.alice.id, "ch_a")
+        presence.set_manual_away(self.alice.id, "ch_a")
+        self.assertEqual(presence.get_status(self.alice.id)["status"], "away")
+
+        presence.clear_manual_away(self.alice.id, "ch_a")
+        self.assertEqual(presence.get_status(self.alice.id)["status"], "online")
+
+        # And now auto-visibility actually works again — blurring goes away.
+        presence.mark_visibility(self.alice.id, "ch_a", False)
+        self.assertEqual(presence.get_status(self.alice.id)["status"], "away")
+        presence.mark_visibility(self.alice.id, "ch_a", True)
+        self.assertEqual(presence.get_status(self.alice.id)["status"], "online")
+
+    def test_full_disconnect_clears_manual_override(self):
+        """
+        The override is session-scoped, not durable. When the user's
+        last tab closes, the next session starts in auto-online mode.
+        """
+        presence.mark_online(self.alice.id, "ch_a")
+        presence.set_manual_away(self.alice.id, "ch_a")
+        presence.mark_offline(self.alice.id, "ch_a")
+
+        # Reconnect — should be back to auto, NOT carried-over away.
+        presence.mark_online(self.alice.id, "ch_a")
+        self.assertEqual(presence.get_status(self.alice.id)["status"], "online")
+
+    def test_manual_away_locks_status_against_other_tabs(self):
+        """
+        Multi-tab: manual-away on one tab applies user-level. Other
+        tabs' visibility events can't override it.
+        """
+        presence.mark_online(self.alice.id, "tab1")
+        presence.mark_online(self.alice.id, "tab2")
+        presence.set_manual_away(self.alice.id, "tab1")
+        self.assertEqual(presence.get_status(self.alice.id)["status"], "away")
+
+        # Tab2 cycles focus — would normally keep user online, but the
+        # override locks user-level to away.
+        presence.mark_visibility(self.alice.id, "tab2", False)
+        self.assertEqual(presence.get_status(self.alice.id)["status"], "away")
+        presence.mark_visibility(self.alice.id, "tab2", True)
+        self.assertEqual(presence.get_status(self.alice.id)["status"], "away")
 
     def test_get_peer_user_ids_only_includes_conversation_partners(self):
         # Alice ↔ Bob share a conversation; Charlie does not.

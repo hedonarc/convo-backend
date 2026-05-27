@@ -320,7 +320,13 @@ class UserConsumer(AsyncWebsocketConsumer):
     """
 
     USER_ACTION_HANDLERS = {
+        # Automatic per-tab signal — tab focused or blurred. Doesn't
+        # override an explicit user intent set via `set_status`.
         "visibility": "handle_visibility",
+        # Explicit user intent from the account menu. Records / clears a
+        # user-level manual override that survives tab-focus events,
+        # reconnects, and multi-tab churn.
+        "set_status": "handle_set_status",
     }
 
     # Keep meaningfully smaller than presence.PRESENCE_TTL_SECONDS so the
@@ -424,6 +430,34 @@ class UserConsumer(AsyncWebsocketConsumer):
         )
         if changed:
             await database_sync_to_async(presence.broadcast_presence)(self.user.id)
+
+    async def handle_set_status(self, data: dict):
+        """
+        Apply an explicit user intent from the account menu (`Set as
+        Away` / `Set as Online`). Distinct from `handle_visibility`,
+        which fires for every tab focus/blur — those mustn't override
+        manual choices.
+
+        Always broadcasts, even when the user-level status didn't change
+        (e.g. clicking "Online" while already online), so the originating
+        client sees the menu's active-check confirm the action landed.
+        Cost: one extra broadcast per explicit click — bounded by user
+        behaviour, not by traffic.
+        """
+        status = data.get("status")
+        if status not in {"online", "away"}:
+            return
+
+        if status == "away":
+            await database_sync_to_async(presence.set_manual_away)(
+                self.user.id, self.channel_name
+            )
+        else:
+            await database_sync_to_async(presence.clear_manual_away)(
+                self.user.id, self.channel_name
+            )
+
+        await database_sync_to_async(presence.broadcast_presence)(self.user.id)
 
     # ── Group event handlers ────────────────────────────────────────────────
 

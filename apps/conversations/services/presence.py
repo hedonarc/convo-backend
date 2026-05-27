@@ -153,6 +153,19 @@ def _record_channel(user_id: int, channel_name: str, status: str) -> None:
     r.zadd(_conns_index_key(user_id), {channel_name: time.time()})
 
 
+def _is_manual_away(user_id: int) -> bool:
+    """
+    Has the user explicitly chosen "Away" via the menu? If so, the
+    user-level status sticks at AWAY regardless of any tab-focus events
+    or reconnects until they explicitly choose Online again (or every tab
+    disconnects). Stored as a hash field on the user key so it survives
+    per-connection churn — the bug being fixed: a tab-blur → tab-refocus
+    cycle (or any WS reconnect) used to flip the user back to online and
+    silently erase their stated intent.
+    """
+    return _redis().hget(_user_key(user_id), "manual_away") == "1"
+
+
 def _recompute_user_status(user_id: int) -> tuple[bool, dict]:
     """
     Read the indexed channels, check which per-channel keys are still
@@ -161,13 +174,25 @@ def _recompute_user_status(user_id: int) -> tuple[bool, dict]:
     all funnel through this so the live/stale boundary is enforced
     uniformly.
 
-    Op cost: ZRANGE + MGET + (ZREM if stale) + HGET + HSET = 4–5 ops.
+    Op cost: ZRANGE + MGET + (HGET manual_away) + (ZREM if stale) +
+    HGET status + HSET status = 5–6 ops.
     """
     r = _redis()
     index_key = _conns_index_key(user_id)
     channels = r.zrange(index_key, 0, -1)
     if not channels:
+        # Fully offline — also drop the manual override so the next
+        # session starts fresh in auto mode. We intentionally don't
+        # persist the override across full disconnects; that matches
+        # Slack semantics ("Away" is session-scoped, not durable).
+        r.hdel(_user_key(user_id), "manual_away")
         return _persist_status(user_id, OFFLINE)
+
+    # Manual override takes precedence over auto computation. We still
+    # check channel liveness above so a stale override on a fully-offline
+    # user can't keep them showing "away" forever.
+    if _is_manual_away(user_id):
+        return _persist_status(user_id, AWAY)
 
     statuses = r.mget([_conn_key(user_id, c) for c in channels])
     live: list[str] = []
@@ -229,6 +254,32 @@ def mark_offline(user_id: int, channel_name: str) -> tuple[bool, dict]:
     r = _redis()
     r.delete(_conn_key(user_id, channel_name))
     r.zrem(_conns_index_key(user_id), channel_name)
+    return _recompute_user_status(user_id)
+
+
+def set_manual_away(user_id: int, channel_name: str) -> tuple[bool, dict]:
+    """
+    Record explicit user intent: "I want to appear away." Survives tab
+    focus/blur and WS reconnects until the user explicitly flips back to
+    online (or their last tab disconnects). Also marks this tab's
+    connection as away so the connection-level state agrees with the
+    override — keeps things consistent if the override is later cleared.
+    """
+    r = _redis()
+    _record_channel(user_id, channel_name, AWAY)
+    r.hset(_user_key(user_id), "manual_away", "1")
+    return _recompute_user_status(user_id)
+
+
+def clear_manual_away(user_id: int, channel_name: str) -> tuple[bool, dict]:
+    """
+    Drop the manual override and flip this tab's connection back to
+    online. After this, status reverts to auto behaviour — tab visibility
+    drives the per-tab state, user-level rolls up from the strongest.
+    """
+    r = _redis()
+    _record_channel(user_id, channel_name, ONLINE)
+    r.hdel(_user_key(user_id), "manual_away")
     return _recompute_user_status(user_id)
 
 
