@@ -23,7 +23,12 @@ class UserSerializer(serializers.ModelSerializer):
             "last_name",
             "password",
             "avatar",
+            "date_joined",
         ]
+        # date_joined is the Django default — owned by the server, never
+        # written by the client. Read-only here so the field shows up in
+        # responses but can't be set via PATCH /api/me/.
+        read_only_fields = ["date_joined"]
 
     def get_avatar(self, obj):
         request = self.context.get("request")
