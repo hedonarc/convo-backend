@@ -29,9 +29,9 @@ projects:
                 sync: false
               - key: REDIS_URL
                 sync: false
-              - key: EMAIL_HOST_USER
+              - key: RESEND_API_KEY
                 sync: false
-              - key: EMAIL_HOST_PASSWORD
+              - key: DEFAULT_FROM_EMAIL
                 sync: false
               - key: DJANGO_SETTINGS_MODULE
                 value: settings.production
