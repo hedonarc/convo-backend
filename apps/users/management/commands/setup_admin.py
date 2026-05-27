@@ -23,12 +23,17 @@ class Command(BaseCommand):
             User.objects.create_superuser(
                 username=username, email=email, password=password
             )
+            from django.conf import settings
+
+            backend_url = getattr(
+                settings, "BACKEND_URL", "http://localhost:8000"
+            ).rstrip("/")
             self.stdout.write(
                 self.style.SUCCESS(
                     f"Successfully created superuser: {username}\n"
                     f"password: {password}\n"
                     f"email: {email}\n"
-                    f"login here: http://localhost:8000/admin/"
+                    f"login here: {backend_url}/admin/"
                 )
             )
         else:

@@ -35,8 +35,14 @@ projects:
                 sync: false
               - key: DJANGO_SETTINGS_MODULE
                 value: settings.production
+              - key: DJANGO_SUPERUSER_USERNAME
+                sync: false
+              - key: DJANGO_SUPERUSER_EMAIL
+                sync: false
+              - key: DJANGO_SUPERUSER_PASSWORD
+                sync: false
             region: singapore
-            buildCommand: uv sync --frozen && uv cache prune --ci && python manage.py migrate --noinput && python manage.py collectstatic --noinput
+            buildCommand: uv sync --frozen && uv cache prune --ci && uv run manage.py migrate --noinput && uv run manage.py collectstatic --noinput && uv run manage.py setup_admin
             startCommand: uv run daphne -b 0.0.0.0 -p $PORT config.asgi:application
             autoDeployTrigger: "off"
             buildFilter:
