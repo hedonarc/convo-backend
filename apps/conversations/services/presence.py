@@ -25,6 +25,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from datetime import UTC, datetime
 import logging
+import os
 
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
@@ -51,12 +52,16 @@ _client: redis.Redis | None = None
 def _redis() -> redis.Redis:
     global _client
     if _client is None:
-        _client = redis.Redis(
-            host=_REDIS_HOST,
-            port=_REDIS_PORT,
-            db=_REDIS_DB,
-            decode_responses=True,
-        )
+        redis_url = os.environ.get("REDIS_URL")
+        if redis_url:
+            _client = redis.from_url(redis_url, decode_responses=True)
+        else:
+            _client = redis.Redis(
+                host=_REDIS_HOST,
+                port=_REDIS_PORT,
+                db=_REDIS_DB,
+                decode_responses=True,
+            )
     return _client
 
 
