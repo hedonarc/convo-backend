@@ -41,6 +41,12 @@ INSTALLED_APPS = THIRD_PARTY_APPS + DJANGO_APPS + LOCAL_APPS
 MIDDLEWARE = [
     "corsheaders.middleware.CorsMiddleware",
     "django.middleware.security.SecurityMiddleware",
+    # WhiteNoise serves `STATIC_ROOT` directly from the Python process so we
+    # don't need nginx in front of Daphne on Render's free tier. Must sit
+    # right after SecurityMiddleware per the project's docs — Security still
+    # runs first (SSL redirect / HSTS), then WhiteNoise short-circuits any
+    # /static/* requests before they reach session / auth / CSRF middleware.
+    "whitenoise.middleware.WhiteNoiseMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",

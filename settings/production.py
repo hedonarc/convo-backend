@@ -44,6 +44,20 @@ CHANNEL_LAYERS = {
     },
 }
 
+# WhiteNoise — compressed + content-hashed static files for production.
+# `CompressedManifestStaticFilesStorage` rewrites filenames to include a
+# content hash (e.g. `base.abc123.css`) so we can serve everything with
+# `Cache-Control: max-age=1y, immutable`. Requires `collectstatic` to have
+# run before boot — Render's buildCommand handles that.
+STORAGES = {
+    "default": {
+        "BACKEND": "django.core.files.storage.FileSystemStorage",
+    },
+    "staticfiles": {
+        "BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage",
+    },
+}
+
 # Email Configuration (Gmail SMTP)
 EMAIL_BACKEND = "django.core.mail.backends.smtp.EmailBackend"
 EMAIL_HOST = "smtp.gmail.com"
