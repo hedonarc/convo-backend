@@ -51,12 +51,13 @@ CHANNEL_LAYERS = {
 # run before boot — Render's buildCommand handles that.
 STORAGES = {
     "default": {
-        "BACKEND": "django.core.files.storage.FileSystemStorage",
+        "BACKEND": "cloudinary_storage.storage.MediaCloudinaryStorage",
     },
     "staticfiles": {
         "BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage",
     },
 }
+
 
 # Email Configuration (Brevo via Anymail, over HTTPS)
 EMAIL_BACKEND = "anymail.backends.brevo.EmailBackend"
@@ -71,6 +72,5 @@ CLOUDINARY_STORAGE = {
     "API_KEY": env.str("CLOUDINARY_API_KEY"),
     "API_SECRET": env.str("CLOUDINARY_API_SECRET"),
 }
-DEFAULT_FILE_STORAGE = "cloudinary_storage.storage.MediaCloudinaryStorage"
 
 MEDIA_URL = "/media/"

@@ -20,8 +20,6 @@ THIRD_PARTY_APPS = [
     "rest_framework",
     "rest_framework_simplejwt.token_blacklist",
     "anymail",
-    "cloudinary_storage",
-    "cloudinary",
 ]
 
 DJANGO_APPS = [
@@ -39,7 +37,9 @@ LOCAL_APPS = [
     "apps.conversations.apps.ConversationsConfig",
 ]
 
-INSTALLED_APPS = THIRD_PARTY_APPS + DJANGO_APPS + LOCAL_APPS
+INSTALLED_APPS = (
+    THIRD_PARTY_APPS + DJANGO_APPS + ["cloudinary_storage", "cloudinary"] + LOCAL_APPS
+)
 
 MIDDLEWARE = [
     "corsheaders.middleware.CorsMiddleware",
