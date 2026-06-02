@@ -20,6 +20,8 @@ THIRD_PARTY_APPS = [
     "rest_framework",
     "rest_framework_simplejwt.token_blacklist",
     "anymail",
+    "cloudinary_storage",
+    "cloudinary",
 ]
 
 DJANGO_APPS = [

@@ -1,5 +1,5 @@
 from .base import *
-from .base import BASE_DIR, SIMPLE_JWT, env
+from .base import SIMPLE_JWT, env
 
 DEBUG = False
 
@@ -65,5 +65,12 @@ ANYMAIL = {
 }
 DEFAULT_FROM_EMAIL = env.str("DEFAULT_FROM_EMAIL")
 
+# Cloudinary settings for user avatars and other media
+CLOUDINARY_STORAGE = {
+    "CLOUD_NAME": env.str("CLOUDINARY_CLOUD_NAME"),
+    "API_KEY": env.str("CLOUDINARY_API_KEY"),
+    "API_SECRET": env.str("CLOUDINARY_API_SECRET"),
+}
+DEFAULT_FILE_STORAGE = "cloudinary_storage.storage.MediaCloudinaryStorage"
+
 MEDIA_URL = "/media/"
-MEDIA_ROOT = BASE_DIR / "media"
