@@ -36,17 +36,12 @@ class UserSerializer(serializers.ModelSerializer):
 
         if instance.avatar:
             request = self.context.get("request")
-            if request is not None:
-                data["avatar"] = request.build_absolute_uri(instance.avatar.url)
-            else:
-                # No HTTP request in scope — typically a WebSocket fanout
-                # (broadcast_conversation_update, notify_invite_accepted).
-                # Fall back to the configured BACKEND_URL so the frontend
-                # still receives an absolute URL it can fetch from any
-                # origin, instead of a relative path it would resolve
-                # against its own host and 404.
-                backend_url = getattr(settings, "BACKEND_URL", "").rstrip("/")
-                if backend_url:
-                    data["avatar"] = f"{backend_url}{instance.avatar.url}"
+            url = instance.avatar.url
+
+            data["avatar"] = (
+                request.build_absolute_uri(url)
+                if request
+                else f"{settings.BACKEND_URL.rstrip('/')}{url}"
+            )
 
         return data
