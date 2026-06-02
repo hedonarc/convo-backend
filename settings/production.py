@@ -1,5 +1,5 @@
 from .base import *
-from .base import SIMPLE_JWT, env
+from .base import BASE_DIR, SIMPLE_JWT, env
 
 DEBUG = False
 
@@ -64,3 +64,6 @@ ANYMAIL = {
     "BREVO_API_KEY": env.str("BREVO_API_KEY"),
 }
 DEFAULT_FROM_EMAIL = env.str("DEFAULT_FROM_EMAIL")
+
+MEDIA_URL = "/media/"
+MEDIA_ROOT = BASE_DIR / "media"
