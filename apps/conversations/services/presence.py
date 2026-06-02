@@ -188,12 +188,6 @@ def _recompute_user_status(user_id: int) -> tuple[bool, dict]:
         r.hdel(_user_key(user_id), "manual_away")
         return _persist_status(user_id, OFFLINE)
 
-    # Manual override takes precedence over auto computation. We still
-    # check channel liveness above so a stale override on a fully-offline
-    # user can't keep them showing "away" forever.
-    if _is_manual_away(user_id):
-        return _persist_status(user_id, AWAY)
-
     statuses = r.mget([_conn_key(user_id, c) for c in channels])
     live: list[str] = []
     stale: list[str] = []
@@ -209,7 +203,17 @@ def _recompute_user_status(user_id: int) -> tuple[bool, dict]:
         r.zrem(index_key, *stale)
 
     if not live:
+        # Fully offline (all channels were stale). Drop the manual override
+        # so the next session starts fresh.
+        r.hdel(_user_key(user_id), "manual_away")
         return _persist_status(user_id, OFFLINE)
+
+    # Manual override takes precedence over auto computation. We still
+    # check channel liveness above so a stale override on a fully-offline
+    # user can't keep them showing "away" forever.
+    if _is_manual_away(user_id):
+        return _persist_status(user_id, AWAY)
+
     return _persist_status(user_id, _compute_user_status(live))
 
 

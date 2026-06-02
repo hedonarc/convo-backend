@@ -1,5 +1,5 @@
 from .base import *
-from .base import BASE_DIR, INSTALLED_APPS, MIDDLEWARE, SIMPLE_JWT, env
+from .base import BASE_DIR, INSTALLED_APPS, MIDDLEWARE, REST_FRAMEWORK, SIMPLE_JWT, env
 
 DEBUG = True
 
@@ -24,6 +24,12 @@ SESSION_COOKIE_SAMESITE = "Lax"
 SIMPLE_JWT = {
     **SIMPLE_JWT,
     "AUTH_COOKIE_SECURE": False,
+}
+
+# Disable throttling for local development
+REST_FRAMEWORK = {
+    **REST_FRAMEWORK,
+    "DEFAULT_THROTTLE_CLASSES": [],
 }
 
 DATABASES = {
