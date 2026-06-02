@@ -11,8 +11,6 @@ class UserSerializer(serializers.ModelSerializer):
         write_only=True, required=False, validators=[validate_password]
     )
 
-    avatar = serializers.ImageField(required=False, allow_null=True)
-
     class Meta:
         model = User
         fields = [
@@ -25,16 +23,7 @@ class UserSerializer(serializers.ModelSerializer):
             "avatar",
             "date_joined",
         ]
-        # date_joined is the Django default — owned by the server, never
-        # written by the client. Read-only here so the field shows up in
-        # responses but can't be set via PATCH /api/me/.
         read_only_fields = ["date_joined"]
-
-    def get_avatar(self, obj):
-        request = self.context.get("request")
-        if obj.avatar:
-            return request.build_absolute_uri(obj.avatar.url)
-        return None
 
     def update(self, instance, validated_data):
         password = validated_data.pop("password", None)
