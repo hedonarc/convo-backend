@@ -23,9 +23,9 @@ key's TTL.
 
 The consumer is expected to call `heartbeat()` on a periodic loop while
 the socket is open. Each heartbeat is **one** Redis op (EXPIRE on the
-per-channel key) — chosen to keep the steady-state cost small on metered
-Redis providers (Upstash free tier is 10k commands/day, so a 4-minute
-heartbeat costs ~360 ops/user/day at 24h continuous, ~60 at typical 4h).
+per-channel key). Tighter timings give snappier offline-detection at the
+cost of more Redis traffic; the values below favour responsiveness over
+op budget — peers see a crashed tab flip to offline within ~TTL seconds.
 
 Tuning knobs:
   PRESENCE_TTL_SECONDS    — how long a connection survives without a beat
@@ -61,13 +61,11 @@ ONLINE = "online"
 AWAY = "away"
 OFFLINE = "offline"
 
-# How long a connection key lives without a heartbeat. Picked to keep
-# Upstash-style metered Redis spend bounded — see module docstring.
-# Trade-off: a browser crash takes up to TTL seconds before peers see the
-# user flip to offline (or the next recompute prunes the entry, whichever
-# fires first). Keep the consumer's HEARTBEAT_INTERVAL_SECONDS at <50% of
-# this so a single missed beat doesn't drop the connection.
-PRESENCE_TTL_SECONDS = 300
+# How long a connection key lives without a heartbeat. Tight value favours
+# fast offline-detection — a crashed tab is reflected to peers within ~TTL
+# seconds. Pair with HEARTBEAT_INTERVAL_SECONDS <50% of this on the
+# consumer side so a single missed beat doesn't sweep the connection.
+PRESENCE_TTL_SECONDS = 90
 
 # Mirrors CHANNEL_LAYERS["default"]["CONFIG"]["hosts"] in settings/base.py.
 # Kept hardcoded for now to avoid pulling channels_redis internals; if the

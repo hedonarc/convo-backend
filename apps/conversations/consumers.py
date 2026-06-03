@@ -330,11 +330,12 @@ class UserConsumer(AsyncWebsocketConsumer):
     }
 
     # Keep meaningfully smaller than presence.PRESENCE_TTL_SECONDS so the
-    # connection's TTL never lapses between beats. With TTL=300s and
-    # interval=240s, the connection survives one missed beat (60s grace).
-    # Sized to keep heartbeat Redis ops cheap on metered providers like
-    # Upstash — see presence module docstring for the cost model.
-    HEARTBEAT_INTERVAL_SECONDS = 240
+    # connection's TTL never lapses between beats. With TTL=90s and
+    # interval=30s, the connection survives two missed beats (30s grace).
+    # Tight timings favour snappy "user appears online" UX over Redis
+    # op budget; if you need to bring spend down later, raise both numbers
+    # together (keeping interval < TTL/2).
+    HEARTBEAT_INTERVAL_SECONDS = 30
 
     async def connect(self):
         self.user = self.scope["user"]
