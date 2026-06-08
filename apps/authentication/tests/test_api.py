@@ -104,3 +104,36 @@ class AuthApiTests(APITestCase):
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn("Invalid credentials", response.data["non_field_errors"])
+
+    def test_logout_clears_cookies_matching_current_simple_jwt_settings(self):
+        """
+        Logout must delete cookies with the attributes (cookie name,
+        secure, samesite) matching the current SIMPLE_JWT settings.
+        """
+        from django.conf import settings
+        from django.test import override_settings
+
+        prod_simple_jwt = {
+            **settings.SIMPLE_JWT,
+            "AUTH_COOKIE_SECURE": True,
+            "AUTH_COOKIE_SAMESITE": "None",
+        }
+
+        with override_settings(SIMPLE_JWT=prod_simple_jwt):
+            response = self.client.post("/api/logout/")
+            self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+            access_cookie = response.cookies.get("access_token")
+            refresh_cookie = response.cookies.get("refresh_token")
+
+            self.assertIsNotNone(access_cookie)
+            self.assertIsNotNone(refresh_cookie)
+
+            self.assertEqual(access_cookie["max-age"], 0)
+            self.assertEqual(refresh_cookie["max-age"], 0)
+
+            # These assertions will fail with the original code on production settings
+            self.assertTrue(access_cookie["secure"])
+            self.assertEqual(access_cookie["samesite"], "None")
+            self.assertTrue(refresh_cookie["secure"])
+            self.assertEqual(refresh_cookie["samesite"], "None")

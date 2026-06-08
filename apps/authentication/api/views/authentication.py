@@ -88,8 +88,12 @@ class LogoutView(APIView):
             {"message": t("logout.success")},
             status=status.HTTP_200_OK,
         )
-        response.delete_cookie(settings.SIMPLE_JWT["AUTH_COOKIE"])
-        response.delete_cookie(settings.SIMPLE_JWT["AUTH_COOKIE_REFRESH"])
+        samesite = settings.SIMPLE_JWT.get("AUTH_COOKIE_SAMESITE", "Lax")
+
+        response.delete_cookie(settings.SIMPLE_JWT["AUTH_COOKIE"], samesite=samesite)
+        response.delete_cookie(
+            settings.SIMPLE_JWT["AUTH_COOKIE_REFRESH"], samesite=samesite
+        )
         return response
 
 
