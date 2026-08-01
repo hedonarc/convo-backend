@@ -23,6 +23,7 @@ dependencies = [
 [dependency-groups]
 dev = [
     "django-silk>=5.5.0",
+    "fakeredis>=2.31",
     "pre-commit>=4.6.0",
     "python-semantic-release>=10.5.3",
     "ruff>=0.15.12",

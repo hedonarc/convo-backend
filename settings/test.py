@@ -33,6 +33,15 @@ CACHES = {
     }
 }
 
+# No infrastructure. The channel layer runs in-process and the presence store
+# talks to fakeredis, so the suite needs neither a broker nor a server.
+CHANNEL_LAYERS = {
+    "default": {
+        "BACKEND": "channels.layers.InMemoryChannelLayer",
+    }
+}
+REDIS_CLIENT = "apps.conversations.services.redis_store.fake_client"
+
 EMAIL_BACKEND = "django.core.mail.backends.locmem.EmailBackend"
 
 REST_FRAMEWORK = {

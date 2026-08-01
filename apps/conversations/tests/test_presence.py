@@ -4,142 +4,15 @@ from django.contrib.auth import get_user_model
 from django.test import TestCase
 
 from apps.conversations.models import Conversation, Participant
-from apps.conversations.services import fanout, presence
+from apps.conversations.services import fanout, presence, redis_store
 
 User = get_user_model()
 
 
-class _FakeRedis:
-    """
-    Minimal in-memory stand-in for the Redis ops presence.py uses.
-
-    Holds three kinds of data behind a single `store` dict:
-      - hashes (dict-of-dicts) — `presence:user:<id>`
-      - strings — `presence:conn:<id>:<channel>`
-      - sorted sets (dict[member]=score) — `presence:conns:<id>` (index)
-
-    TTLs are ignored; tests don't advance time. Status-recompute logic in
-    presence.py prunes by score (ZSET), so tests that need to simulate
-    expiry can ZREM directly or set a score in the past.
-    """
-
-    def __init__(self):
-        self.store: dict = {}
-
-    # ── Hash ops ──────────────────────────────────────────────────────────
-
-    def hset(self, key, field=None, value=None, mapping=None):
-        bucket = self.store.setdefault(key, {})
-        if mapping:
-            bucket.update({k: str(v) for k, v in mapping.items()})
-        elif field is not None:
-            bucket[field] = str(value)
-
-    def hget(self, key, field):
-        return self.store.get(key, {}).get(field)
-
-    def hgetall(self, key):
-        return dict(self.store.get(key, {}))
-
-    def hdel(self, key, *fields):
-        bucket = self.store.get(key)
-        if not isinstance(bucket, dict):
-            return
-        for f in fields:
-            bucket.pop(f, None)
-        if not bucket:
-            self.store.pop(key, None)
-
-    # ── String ops ────────────────────────────────────────────────────────
-
-    def set(self, key, value, ex=None):  # noqa: ARG002 — ex ignored in tests
-        self.store[key] = str(value)
-
-    def get(self, key):
-        value = self.store.get(key)
-        # Defensively avoid returning hash/zset structures as strings.
-        if isinstance(value, dict):
-            return None
-        return value
-
-    def mget(self, keys):
-        return [self.get(k) for k in keys]
-
-    def delete(self, *keys):
-        for k in keys:
-            self.store.pop(k, None)
-
-    def exists(self, *keys):
-        return sum(1 for k in keys if k in self.store)
-
-    def expire(self, key, _seconds):
-        # TTL is a real-Redis concern. The fake doesn't model time, so
-        # EXPIRE is a no-op when the key exists and returns 0 otherwise
-        # — matches the contract the production code relies on (it
-        # ignores EXPIRE's return value).
-        return 1 if key in self.store else 0
-
-    # ── Sorted-set ops ────────────────────────────────────────────────────
-
-    def zadd(self, key, mapping):
-        bucket = self.store.setdefault(key, {})
-        if not isinstance(bucket, dict):
-            raise TypeError(f"WRONGTYPE on {key}")
-        for member, score in mapping.items():
-            bucket[member] = float(score)
-
-    def zrange(self, key, start, end):
-        bucket = self.store.get(key, {})
-        members = sorted(bucket.items(), key=lambda kv: kv[1])
-        names = [m for m, _ in members]
-        if end == -1:
-            return names[start:]
-        return names[start : end + 1]
-
-    def zrem(self, key, *members):
-        bucket = self.store.get(key)
-        if not isinstance(bucket, dict):
-            return
-        for m in members:
-            bucket.pop(m, None)
-        if not bucket:
-            self.store.pop(key, None)
-
-    def zremrangebyscore(self, key, min_score, max_score):
-        bucket = self.store.get(key)
-        if not isinstance(bucket, dict):
-            return
-        to_remove = [m for m, s in bucket.items() if min_score <= s <= max_score]
-        for m in to_remove:
-            bucket.pop(m, None)
-        if not bucket:
-            self.store.pop(key, None)
-
-    # ── Pipeline ──────────────────────────────────────────────────────────
-
-    def pipeline(self):
-        outer = self
-
-        class _Pipe:
-            def __init__(self):
-                self.ops = []
-
-            def hgetall(self, key):
-                self.ops.append(key)
-                return self
-
-            def execute(self):
-                return [dict(outer.store.get(k, {})) for k in self.ops]
-
-        return _Pipe()
-
-
 class PresenceServiceTests(TestCase):
     def setUp(self):
-        self.fake = _FakeRedis()
-        self.redis_patcher = patch.object(presence, "_redis", return_value=self.fake)
-        self.redis_patcher.start()
-        self.addCleanup(self.redis_patcher.stop)
+        self.fake = redis_store.client()
+        self.fake.flushall()
 
         self.alice = User.objects.create_user(
             username="alice", email="alice@example.com", password="x"
@@ -369,10 +242,8 @@ class PresenceServiceTests(TestCase):
 
 class PresenceEndpointTests(TestCase):
     def setUp(self):
-        self.fake = _FakeRedis()
-        self.redis_patcher = patch.object(presence, "_redis", return_value=self.fake)
-        self.redis_patcher.start()
-        self.addCleanup(self.redis_patcher.stop)
+        self.fake = redis_store.client()
+        self.fake.flushall()
 
         self.alice = User.objects.create_user(
             username="alice", email="alice@example.com", password="x"
@@ -411,10 +282,8 @@ class PresenceBroadcastAudienceTests(TestCase):
     """
 
     def setUp(self):
-        self.fake = _FakeRedis()
-        self.redis_patcher = patch.object(presence, "_redis", return_value=self.fake)
-        self.redis_patcher.start()
-        self.addCleanup(self.redis_patcher.stop)
+        self.fake = redis_store.client()
+        self.fake.flushall()
 
         self.alice = User.objects.create_user(
             username="alice", email="alice@example.com", password="x"

@@ -155,12 +155,17 @@ STATIC_ROOT = BASE_DIR / "staticfiles"
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
-# Channels
+# Redis serves two unrelated jobs — the channel layer's pub/sub transport and
+# the presence store's own keys. Both read this one setting so they cannot
+# drift apart. See apps/conversations/services/redis_store.py.
+REDIS_URL = env.str("REDIS_URL", default="redis://127.0.0.1:6379/0")
+REDIS_CLIENT = "apps.conversations.services.redis_store.real_client"
+
 CHANNEL_LAYERS = {
     "default": {
         "BACKEND": "channels_redis.core.RedisChannelLayer",
         "CONFIG": {
-            "hosts": [("127.0.0.1", 6379)],
+            "hosts": [REDIS_URL],
         },
     },
 }

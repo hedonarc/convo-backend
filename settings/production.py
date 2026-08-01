@@ -1,5 +1,5 @@
 from .base import *
-from .base import SIMPLE_JWT, env
+from .base import CHANNEL_LAYERS, SIMPLE_JWT, env
 
 DEBUG = False
 
@@ -34,15 +34,11 @@ SIMPLE_JWT = {
     "AUTH_COOKIE_SAMESITE": "None",
 }
 
-# Use Redis URL from environment for WebSockets
-CHANNEL_LAYERS = {
-    "default": {
-        "BACKEND": "channels_redis.core.RedisChannelLayer",
-        "CONFIG": {
-            "hosts": [env.str("REDIS_URL")],
-        },
-    },
-}
+# REDIS_URL is required here rather than defaulted — a production boot with
+# no Redis should fail loudly, not fall back to localhost. The channel layer
+# and the presence store both pick it up from base.py.
+REDIS_URL = env.str("REDIS_URL")
+CHANNEL_LAYERS["default"]["CONFIG"]["hosts"] = [REDIS_URL]
 
 # WhiteNoise — compressed + content-hashed static files for production.
 # `CompressedManifestStaticFilesStorage` rewrites filenames to include a
