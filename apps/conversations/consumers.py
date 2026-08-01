@@ -18,42 +18,62 @@ from utils.translations import t
 logger = logging.getLogger(__name__)
 
 
-class RejectsWithCode:
-    """Mixin giving consumers a close the browser can actually read.
-
-    Daphne answers a close sent before `accept` with an HTTP 403 handshake
-    rejection and discards the application code, so the browser reports 1006.
-    """
+class ClientSocket:
+    """How both consumers talk to a browser."""
 
     async def reject(self, code: int) -> None:
+        """Close with *code* after accepting, so the browser can read it.
+
+        Daphne answers a pre-accept close with an HTTP 403 handshake rejection
+        and discards the application code, leaving the browser with 1006.
+        """
         await self.accept()
         await self.close(code=code)
 
+    async def send_frame(self, frame_type: str, data) -> None:
+        """Write one typed frame to this socket."""
+        await self.send(text_data=json.dumps({"type": frame_type, "data": data}))
 
-class ConversationConsumer(RejectsWithCode, AsyncWebsocketConsumer):
-    # Mapping of client-sent action names → handler method names.
-    # Built once at class definition time instead of on every incoming frame.
+    async def send_error(self, message: str) -> None:
+        """Errors carry their text at the top level rather than under `data`."""
+        await self.send(text_data=json.dumps({"type": "error", "message": message}))
+
+    async def route(self, text_data: str, handlers: dict) -> None:
+        """Parse an inbound frame and hand it to the handler *handlers* names."""
+        try:
+            payload = json.loads(text_data)
+            action = payload.get("action")
+            data = payload.get("data", {})
+        except (json.JSONDecodeError, AttributeError):
+            await self.send_error(t("websocket.invalid_json"))
+            return
+
+        handler_name = handlers.get(action)
+        if handler_name is None:
+            await self.send_error(t("websocket.unknown_action").format(action=action))
+            return
+
+        await getattr(self, handler_name)(data)
+
+
+class ConversationConsumer(ClientSocket, AsyncWebsocketConsumer):
+    """One connection per open conversation."""
+
     ACTION_HANDLERS = {
         "send_message": "handle_send_message",
         "typing": "handle_typing",
         "read": "handle_read_receipt",
     }
 
-    # -------------------------------------------------------------------------
-    # Connection Lifecycle
-    # -------------------------------------------------------------------------
-
     async def connect(self):
         self.user = self.scope["user"]
         self.conversation_id = self.scope["url_route"]["kwargs"]["conversation_id"]
 
-        # Defensive guard — JWTAuthMiddleware already blocks anonymous users
-        # before reaching this point, but we keep this as an explicit safety net.
+        # JWTAuthMiddleware already blocks anonymous users; this is a net.
         if not self.user.is_authenticated:
             await self.reject(4001)
             return
 
-        # Authorization — user must be a participant in the conversation.
         self.conversation = await conversation_for_participant_async(
             self.user, self.conversation_id
         )
@@ -67,7 +87,6 @@ class ConversationConsumer(RejectsWithCode, AsyncWebsocketConsumer):
             return
 
         self.room_group_name = fanout.conversation_group(self.conversation_id)
-
         await self.channel_layer.group_add(self.room_group_name, self.channel_name)
         await self.accept()
 
@@ -89,39 +108,12 @@ class ConversationConsumer(RejectsWithCode, AsyncWebsocketConsumer):
                 close_code,
             )
 
-    # -------------------------------------------------------------------------
-    # Incoming Message Dispatcher
-    # -------------------------------------------------------------------------
-
     async def receive(self, text_data):
-        """
-        Parse incoming frames and route to the appropriate action handler.
+        await self.route(text_data, self.ACTION_HANDLERS)
 
-        Expected payload schema:
-            { "action": "<action_name>", "data": { ... } }
-        """
-        try:
-            payload = json.loads(text_data)
-            action = payload.get("action")
-            data = payload.get("data", {})
-        except (json.JSONDecodeError, AttributeError):
-            await self.send_error(t("websocket.invalid_json"))
-            return
-
-        handler_name = self.ACTION_HANDLERS.get(action)
-        if handler_name:
-            await getattr(self, handler_name)(data)
-        else:
-            await self.send_error(t("websocket.unknown_action").format(action=action))
-
-    # -------------------------------------------------------------------------
-    # Action Handlers
-    # -------------------------------------------------------------------------
+    # ── Actions from the client ─────────────────────────────────────────────
 
     async def handle_send_message(self, data: dict):
-        """
-        Persist a new message to the DB then broadcast it to the room group.
-        """
         content = data.get("content", "").strip()
         if not content:
             await self.send_error(t("messages.empty_content"))
@@ -136,9 +128,6 @@ class ConversationConsumer(RejectsWithCode, AsyncWebsocketConsumer):
         await post_message_async(self.conversation, self.user, content)
 
     async def handle_typing(self, data: dict):
-        """
-        Broadcast a typing indicator to all other participants in the room.
-        """
         await fanout.to_conversation(
             self.conversation.id,
             fanout.TYPING,
@@ -147,14 +136,6 @@ class ConversationConsumer(RejectsWithCode, AsyncWebsocketConsumer):
         )
 
     async def handle_read_receipt(self, data: dict):
-        """
-        Mark a message as read for this user and broadcast the receipt to the group.
-
-        Validates that:
-        - message_id is a positive integer
-        - the message exists and belongs to this conversation (prevents marking
-          arbitrary or cross-conversation IDs as read)
-        """
         message_id = data.get("message_id")
         if not isinstance(message_id, int) or message_id <= 0:
             await self.send_error("A valid integer message_id is required")
@@ -163,133 +144,69 @@ class ConversationConsumer(RejectsWithCode, AsyncWebsocketConsumer):
         if not await record_read(self.user, self.conversation, message_id):
             await self.send_error(t("messages.not_found_in_conversation"))
 
-    # -------------------------------------------------------------------------
-    # Group Event Handlers
-    # These methods are invoked by the channel layer when a group_send message
-    # arrives. The method name must match the "type" key (dots → underscores).
-    # -------------------------------------------------------------------------
+    # ── Events from the channel layer ───────────────────────────────────────
 
     async def chat_message_event(self, event):
-        """Deliver a new message to the connected client, recording the receipt."""
         message = event["message"]
 
         if is_peer_message(message, self.user):
             await record_delivery(self.user, self.conversation.id, message["id"])
 
-        await self.send(text_data=json.dumps({"type": "new_message", "data": message}))
+        await self.send_frame("new_message", message)
 
     async def delivered_event(self, event):
-        """Deliver a delivery receipt to the connected client.
-
-        Skipped for the participant who confirmed delivery — they don't need
-        their own receipt back. Same pattern as `typing_event`.
-        """
+        """Skipped for the participant who confirmed it — no echo to self."""
         if event["user_id"] == self.user.id:
             return
 
-        await self.send(
-            text_data=json.dumps(
-                {
-                    "type": "delivered_receipt",
-                    "data": {
-                        "user_id": event["user_id"],
-                        "message_id": event["message_id"],
-                    },
-                }
-            )
+        await self.send_frame(
+            "delivered_receipt",
+            {"user_id": event["user_id"], "message_id": event["message_id"]},
         )
 
     async def typing_event(self, event):
-        """Deliver a typing indicator to the connected WebSocket client.
-
-        Skipped for the sender — a user does not need to receive
-        their own typing indicator back.
-        """
+        """Skipped for the sender — no echo to self."""
         if event["user_id"] == self.user.id:
             return
 
-        await self.send(
-            text_data=json.dumps(
-                {
-                    "type": "typing",
-                    "data": {
-                        "user_id": event["user_id"],
-                        "is_typing": event["is_typing"],
-                    },
-                }
-            )
+        await self.send_frame(
+            "typing",
+            {"user_id": event["user_id"], "is_typing": event["is_typing"]},
         )
 
     async def read_event(self, event):
-        """Deliver a read receipt to the connected WebSocket client."""
-        await self.send(
-            text_data=json.dumps(
-                {
-                    "type": "read_receipt",
-                    "data": {
-                        "user_id": event["user_id"],
-                        "message_id": event["message_id"],
-                    },
-                }
-            )
+        await self.send_frame(
+            "read_receipt",
+            {"user_id": event["user_id"], "message_id": event["message_id"]},
         )
 
     async def message_edited_event(self, event):
-        """Deliver an edited-message snapshot to the connected client."""
-        await self.send(
-            text_data=json.dumps({"type": "message_edited", "data": event["message"]})
-        )
+        await self.send_frame("message_edited", event["message"])
 
     async def message_deleted_event(self, event):
-        """Deliver a soft-deleted-message snapshot to the connected client."""
-        await self.send(
-            text_data=json.dumps({"type": "message_deleted", "data": event["message"]})
-        )
-
-    # -------------------------------------------------------------------------
-    # Utilities
-    # -------------------------------------------------------------------------
-
-    async def send_error(self, message: str):
-        """Send a structured error frame to the connected client."""
-        await self.send(text_data=json.dumps({"type": "error", "message": message}))
+        await self.send_frame("message_deleted", event["message"])
 
 
-class UserConsumer(RejectsWithCode, AsyncWebsocketConsumer):
-    """
-    One connection per logged-in user. Joins the per-user fanout group
-    `user_<id>` so the server can push events spanning any conversation the
-    user participates in — primarily for the sidebar's conversation list to
-    update in real time without one socket per conversation.
+class UserConsumer(ClientSocket, AsyncWebsocketConsumer):
+    """One connection per logged-in user, for everything not tied to one chat.
 
-    Also owns presence: on connect/disconnect the user is flipped to
-    online/offline in Redis and the change is broadcast to conversation
-    peers. The client may send a `visibility` action to mark the tab as
-    away (hidden) or online (visible) without dropping the socket.
+    Carries the sidebar's cross-conversation updates, and owns presence: the
+    socket's lifetime is what makes a user online, and a `visibility` or
+    `set_status` action moves them between online and away without dropping it.
     """
 
     USER_ACTION_HANDLERS = {
-        # Automatic per-tab signal — tab focused or blurred. Doesn't
-        # override an explicit user intent set via `set_status`.
         "visibility": "handle_visibility",
-        # Explicit user intent from the account menu. Records / clears a
-        # user-level manual override that survives tab-focus events,
-        # reconnects, and multi-tab churn.
         "set_status": "handle_set_status",
     }
 
-    # Keep meaningfully smaller than presence.PRESENCE_TTL_SECONDS so the
-    # connection's TTL never lapses between beats. With TTL=90s and
-    # interval=30s, the connection survives two missed beats (30s grace).
-    # Tight timings favour snappy "user appears online" UX over Redis
-    # op budget; if you need to bring spend down later, raise both numbers
-    # together (keeping interval < TTL/2).
+    # Must stay under half of presence.PRESENCE_TTL_SECONDS so a single missed
+    # beat cannot sweep a live connection. See docs/adr/0001-presence-timings.
     HEARTBEAT_INTERVAL_SECONDS = 30
 
     async def connect(self):
         self.user = self.scope["user"]
 
-        # Defensive — JWTAuthMiddleware already blocks anonymous users.
         if not self.user.is_authenticated:
             await self.reject(4001)
             return
@@ -298,24 +215,19 @@ class UserConsumer(RejectsWithCode, AsyncWebsocketConsumer):
         await self.channel_layer.group_add(self.room_group_name, self.channel_name)
         await self.accept()
 
-        # Flip presence to online and fan out to peers. Wrapped via
-        # database_sync_to_async because get_peer_user_ids hits the ORM.
         changed, _ = await database_sync_to_async(presence.mark_online)(
             self.user.id, self.channel_name
         )
         if changed:
             await database_sync_to_async(presence.broadcast_presence)(self.user.id)
 
-        # Background task that refreshes the Redis TTL on this connection's
-        # presence keys. Without it, an idle tab would be swept out by the
-        # TTL guard and stop being counted in the user's status.
         self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
 
         logger.info("User WebSocket connected: user=%s", self.user.id)
 
     async def disconnect(self, close_code):
-        # Stop the heartbeat *first* so a refresh can't race with the
-        # offline-mark below and resurrect the connection in Redis.
+        # Cancel first, or a beat in flight can resurrect the connection key
+        # after the offline mark below has removed it.
         task = getattr(self, "_heartbeat_task", None)
         if task is not None:
             task.cancel()
@@ -336,89 +248,52 @@ class UserConsumer(RejectsWithCode, AsyncWebsocketConsumer):
             )
 
     async def _heartbeat_loop(self):
-        """Refresh the per-connection TTL on a timer while the socket is open."""
-        try:
-            while True:
-                await asyncio.sleep(self.HEARTBEAT_INTERVAL_SECONDS)
-                try:
-                    await database_sync_to_async(presence.heartbeat)(
-                        self.user.id, self.channel_name
-                    )
-                except Exception:
-                    # Redis hiccups shouldn't kill the socket — the next
-                    # beat (or any user event) will catch up.
-                    logger.exception(
-                        "Presence heartbeat failed for user=%s", self.user.id
-                    )
-        except asyncio.CancelledError:
-            # Expected on disconnect — let it propagate so the task ends.
-            raise
+        """Keep this connection's presence key alive while the socket is open."""
+        while True:
+            await asyncio.sleep(self.HEARTBEAT_INTERVAL_SECONDS)
+            try:
+                await database_sync_to_async(presence.heartbeat)(
+                    self.user.id, self.channel_name
+                )
+            except Exception:
+                logger.exception("Presence heartbeat failed for user=%s", self.user.id)
 
     async def receive(self, text_data):
-        """Parse an inbound frame and route it to its action handler."""
-        try:
-            payload = json.loads(text_data)
-            action = payload.get("action")
-            data = payload.get("data", {})
-        except (json.JSONDecodeError, AttributeError):
-            await self.send_error(t("websocket.invalid_json"))
-            return
+        await self.route(text_data, self.USER_ACTION_HANDLERS)
 
-        handler_name = self.USER_ACTION_HANDLERS.get(action)
-        if handler_name:
-            await getattr(self, handler_name)(data)
-        else:
-            await self.send_error(t("websocket.unknown_action").format(action=action))
-
-    async def send_error(self, message: str):
-        """Send a structured error frame to the connected client."""
-        await self.send(text_data=json.dumps({"type": "error", "message": message}))
+    # ── Actions from the client ─────────────────────────────────────────────
 
     async def handle_visibility(self, data: dict):
-        """Mark this socket online (tab visible) or away (tab hidden)."""
-        visible = bool(data.get("visible", True))
+        """Tab focused or blurred. Never overrides an explicit `set_status`."""
         changed, _ = await database_sync_to_async(presence.mark_visibility)(
-            self.user.id, self.channel_name, visible
+            self.user.id, self.channel_name, bool(data.get("visible", True))
         )
         if changed:
             await database_sync_to_async(presence.broadcast_presence)(self.user.id)
 
     async def handle_set_status(self, data: dict):
-        """
-        Apply an explicit user intent from the account menu (`Set as
-        Away` / `Set as Online`). Distinct from `handle_visibility`,
-        which fires for every tab focus/blur — those mustn't override
-        manual choices.
+        """Explicit choice from the account menu, which outranks tab focus.
 
-        Always broadcasts, even when the user-level status didn't change
-        (e.g. clicking "Online" while already online), so the originating
-        client sees the menu's active-check confirm the action landed.
-        Cost: one extra broadcast per explicit click — bounded by user
-        behaviour, not by traffic.
+        Broadcasts even when the status did not change, so the menu's
+        active-check confirms the click landed.
         """
         status = data.get("status")
         if status not in {"online", "away"}:
             return
 
-        if status == "away":
-            await database_sync_to_async(presence.set_manual_away)(
-                self.user.id, self.channel_name
-            )
-        else:
-            await database_sync_to_async(presence.clear_manual_away)(
-                self.user.id, self.channel_name
-            )
-
+        apply = (
+            presence.set_manual_away if status == "away" else presence.clear_manual_away
+        )
+        await database_sync_to_async(apply)(self.user.id, self.channel_name)
         await database_sync_to_async(presence.broadcast_presence)(self.user.id)
 
-    # ── Group event handlers ────────────────────────────────────────────────
+    # ── Events from the channel layer ───────────────────────────────────────
 
     async def conversation_updated_event(self, event):
-        """Push a conversation snapshot to the connected client.
+        """Push a conversation snapshot to the client.
 
-        This is the only place a delivery pointer can advance for a user who
-        is not currently in the conversation's room — without it the sender
-        would sit on a single tick while the recipient reads another chat.
+        Also the only place a delivery pointer can advance for someone reading
+        a different chat — without it the sender sits on a single tick.
         """
         conversation = event["conversation"]
         last_message = conversation.get("last_message")
@@ -429,40 +304,24 @@ class UserConsumer(RejectsWithCode, AsyncWebsocketConsumer):
             # A fresher snapshot is already on the wire; ours is now stale.
             return
 
-        await self.send(
-            text_data=json.dumps({"type": "conversation_updated", "data": conversation})
-        )
+        await self.send_frame("conversation_updated", conversation)
 
     async def presence_changed_event(self, event):
-        """Deliver a peer's presence transition to this client."""
-        await self.send(
-            text_data=json.dumps(
-                {
-                    "type": "presence_changed",
-                    "data": {
-                        "user_id": event["user_id"],
-                        "status": event["status"],
-                        "last_seen_at": event["last_seen_at"],
-                    },
-                }
-            )
+        await self.send_frame(
+            "presence_changed",
+            {
+                "user_id": event["user_id"],
+                "status": event["status"],
+                "last_seen_at": event["last_seen_at"],
+            },
         )
 
     async def invite_accepted_event(self, event):
-        """Push an inviter-only notification frame when an invitee accepts.
-
-        Carries the acceptor's public profile + the conversation id so the
-        frontend can render a toast ("X joined the conversation") and
-        optionally focus the new conversation in the sidebar.
-        """
-        await self.send(
-            text_data=json.dumps(
-                {
-                    "type": "invite_accepted",
-                    "data": {
-                        "acceptor": event["acceptor"],
-                        "conversation_id": event["conversation_id"],
-                    },
-                }
-            )
+        """Inviter-only: someone accepted, so the frontend can toast it."""
+        await self.send_frame(
+            "invite_accepted",
+            {
+                "acceptor": event["acceptor"],
+                "conversation_id": event["conversation_id"],
+            },
         )

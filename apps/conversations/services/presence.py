@@ -1,44 +1,20 @@
-"""
-Redis-backed user presence — ephemeral, no database persistence.
+"""Who is online, held in Redis and never in the database.
 
-Each user has three Redis keys:
-  - presence:user:<id>            (hash)    fields: status, last_seen_at
-  - presence:conns:<id>           (zset)    member: channel_name (live channels index)
-  - presence:conn:<id>:<channel>  (string)  value: "online" | "away", TTL bound
+Three keys per user:
 
-User status is the strongest state across all live connections:
-    online  if any tab is online
-    away    elif any tab is away
-    offline if no live connections
+    presence:user:<id>            hash    status, last_seen_at, manual_away
+    presence:conns:<id>           zset    index of this user's channel names
+    presence:conn:<id>:<channel>  string  "online" | "away", TTL bound
 
-Why three keys? The zset is the *index* of channel names this user has
-ever had. The per-channel string holds that connection's visibility state
-and is bound to a Redis TTL so it self-destructs if the consumer dies
-without firing disconnect (browser crash, dev-server kill, OOM). On every
-status read, recompute checks each indexed channel for key existence —
-expired ones get pruned from the index in the same pass. The zset score
-is unused for liveness (it carries the original expiration but isn't
-refreshed on heartbeat) — actual liveness is determined by the per-channel
-key's TTL.
+A user is as present as their most-present tab: online if any is online,
+away if any is away, offline once none survive. The per-channel key's TTL
+is what decides survival, so a tab that dies without a disconnect frame
+disappears on its own and `_recompute_user_status` prunes it from the index.
 
-The consumer is expected to call `heartbeat()` on a periodic loop while
-the socket is open. Each heartbeat is **one** Redis op (EXPIRE on the
-per-channel key). Tighter timings give snappier offline-detection at the
-cost of more Redis traffic; the values below favour responsiveness over
-op budget — peers see a crashed tab flip to offline within ~TTL seconds.
+Losing Redis makes everyone offline until they reconnect, which is what a
+network blip already looks like. Nothing to migrate, nothing to clean up.
 
-Tuning knobs:
-  PRESENCE_TTL_SECONDS    — how long a connection survives without a beat
-  HEARTBEAT defined in    — consumer side (UserConsumer.HEARTBEAT_INTERVAL_SECONDS)
-  Keep heartbeat < TTL/2  — survives at least one missed beat.
-
-Presence is ephemeral by design: a Redis crash or server restart leaves
-everyone as offline until they reconnect, which is the same effect as a
-network blip. No migration, no DB writes, no cleanup job.
-
-Fanout target: only users who share at least one Conversation with the
-changed user — see `get_peer_user_ids`. Strangers never see each other's
-presence.
+See docs/adr/0001-presence-timings.md for the TTL and heartbeat trade-off.
 """
 
 from __future__ import annotations
@@ -57,10 +33,7 @@ ONLINE = "online"
 AWAY = "away"
 OFFLINE = "offline"
 
-# How long a connection key lives without a heartbeat. Tight value favours
-# fast offline-detection — a crashed tab is reflected to peers within ~TTL
-# seconds. Pair with HEARTBEAT_INTERVAL_SECONDS <50% of this on the
-# consumer side so a single missed beat doesn't sweep the connection.
+# Paired with UserConsumer.HEARTBEAT_INTERVAL_SECONDS — see the ADR.
 PRESENCE_TTL_SECONDS = 90
 
 _redis = redis_store.client
@@ -93,10 +66,9 @@ def _compute_user_status(conn_statuses: Iterable[str]) -> str:
 
 
 def _persist_status(user_id: int, status: str) -> tuple[bool, dict]:
-    """
-    Write the user-level status to Redis. Returns (changed, payload) where
-    `changed` is True iff the status differs from what was stored, so callers
-    can skip a broadcast on a no-op transition.
+    """Store the user-level status, reporting whether it actually moved.
+
+    Callers skip the broadcast when it did not.
     """
     r = _redis()
     key = _user_key(user_id)
@@ -111,51 +83,34 @@ def _persist_status(user_id: int, status: str) -> tuple[bool, dict]:
 
 
 def _record_channel(user_id: int, channel_name: str, status: str) -> None:
-    """
-    Register a channel with the index and write its per-channel status
-    with a bounded TTL. Two ops — only called on actual transitions
-    (mark_online / mark_visibility / mark_offline), never per-heartbeat.
-    """
+    """Index a channel and give it a TTL. Two ops, on transitions only."""
     r = _redis()
     r.set(_conn_key(user_id, channel_name), status, ex=PRESENCE_TTL_SECONDS)
-    # Score is informational (last-transition timestamp). Liveness is
-    # decided by per-channel key existence at recompute time, not by
-    # score — that's why heartbeat doesn't touch the zset.
+    # The score is only a last-transition timestamp; liveness comes from the
+    # per-channel key, which is why heartbeat never touches this zset.
     r.zadd(_conns_index_key(user_id), {channel_name: time.time()})
 
 
 def _is_manual_away(user_id: int) -> bool:
-    """
-    Has the user explicitly chosen "Away" via the menu? If so, the
-    user-level status sticks at AWAY regardless of any tab-focus events
-    or reconnects until they explicitly choose Online again (or every tab
-    disconnects). Stored as a hash field on the user key so it survives
-    per-connection churn — the bug being fixed: a tab-blur → tab-refocus
-    cycle (or any WS reconnect) used to flip the user back to online and
-    silently erase their stated intent.
+    """Did the user choose "Away" themselves?
+
+    Held on the user key rather than a connection key so tab focus and
+    reconnects cannot quietly undo a stated intent.
     """
     return _redis().hget(_user_key(user_id), "manual_away") == "1"
 
 
 def _recompute_user_status(user_id: int) -> tuple[bool, dict]:
-    """
-    Read the indexed channels, check which per-channel keys are still
-    alive, prune any that aren't, and persist the computed user-level
-    status. The single place that decides what the world sees — `mark_*`
-    all funnel through this so the live/stale boundary is enforced
-    uniformly.
+    """Decide what the world sees, pruning connections that died silently.
 
-    Op cost: ZRANGE + MGET + (HGET manual_away) + (ZREM if stale) +
-    HGET status + HSET status = 5–6 ops.
+    Every `mark_*` ends here, so the live/stale boundary is drawn once.
+    Costs 5-6 Redis ops.
     """
     r = _redis()
     index_key = _conns_index_key(user_id)
     channels = r.zrange(index_key, 0, -1)
     if not channels:
-        # Fully offline — also drop the manual override so the next
-        # session starts fresh in auto mode. We intentionally don't
-        # persist the override across full disconnects; that matches
-        # Slack semantics ("Away" is session-scoped, not durable).
+        # "Away" is session-scoped, as in Slack: the last tab leaving clears it.
         r.hdel(_user_key(user_id), "manual_away")
         return _persist_status(user_id, OFFLINE)
 
@@ -168,20 +123,15 @@ def _recompute_user_status(user_id: int) -> tuple[bool, dict]:
         else:
             live.append(status)
 
-    # Garbage-collect ZSET members whose per-channel key has expired.
-    # Conditional so we don't burn an op on the steady-state happy path.
+    # Conditional so the steady-state path does not spend an op.
     if stale:
         r.zrem(index_key, *stale)
 
     if not live:
-        # Fully offline (all channels were stale). Drop the manual override
-        # so the next session starts fresh.
         r.hdel(_user_key(user_id), "manual_away")
         return _persist_status(user_id, OFFLINE)
 
-    # Manual override takes precedence over auto computation. We still
-    # check channel liveness above so a stale override on a fully-offline
-    # user can't keep them showing "away" forever.
+    # Checked after liveness, so a stale override cannot pin an offline user.
     if _is_manual_away(user_id):
         return _persist_status(user_id, AWAY)
 
@@ -200,10 +150,7 @@ def mark_online(user_id: int, channel_name: str) -> tuple[bool, dict]:
 def mark_visibility(
     user_id: int, channel_name: str, visible: bool
 ) -> tuple[bool, dict]:
-    """
-    Update a single connection's visibility (tab focused vs hidden) and
-    recompute the user-level status. No-op for unknown / expired channels.
-    """
+    """Move one tab between visible and hidden. No-op for a dead channel."""
     r = _redis()
     if r.get(_conn_key(user_id, channel_name)) is None:
         return False, get_status(user_id)
@@ -212,14 +159,9 @@ def mark_visibility(
 
 
 def heartbeat(user_id: int, channel_name: str) -> None:
-    """
-    Refresh the TTL on a live connection without changing its status.
-    Exactly **one** Redis op (EXPIRE) — this is the dominant cost in
-    steady state, so it's deliberately minimal.
+    """Keep a live connection alive. One op, the dominant steady-state cost.
 
-    If the key has already expired EXPIRE returns 0 (no-op); we don't
-    care, the next event or fresh connect will reestablish presence
-    through mark_online.
+    Already expired is fine: the next connect re-establishes presence.
     """
     _redis().expire(_conn_key(user_id, channel_name), PRESENCE_TTL_SECONDS)
 
@@ -233,12 +175,10 @@ def mark_offline(user_id: int, channel_name: str) -> tuple[bool, dict]:
 
 
 def set_manual_away(user_id: int, channel_name: str) -> tuple[bool, dict]:
-    """
-    Record explicit user intent: "I want to appear away." Survives tab
-    focus/blur and WS reconnects until the user explicitly flips back to
-    online (or their last tab disconnects). Also marks this tab's
-    connection as away so the connection-level state agrees with the
-    override — keeps things consistent if the override is later cleared.
+    """Pin the user to away until they say otherwise, or their last tab closes.
+
+    This tab is marked away too, so clearing the override later leaves a
+    consistent state.
     """
     r = _redis()
     _record_channel(user_id, channel_name, AWAY)
@@ -247,11 +187,7 @@ def set_manual_away(user_id: int, channel_name: str) -> tuple[bool, dict]:
 
 
 def clear_manual_away(user_id: int, channel_name: str) -> tuple[bool, dict]:
-    """
-    Drop the manual override and flip this tab's connection back to
-    online. After this, status reverts to auto behaviour — tab visibility
-    drives the per-tab state, user-level rolls up from the strongest.
-    """
+    """Hand control back to tab visibility, with this tab counted as online."""
     r = _redis()
     _record_channel(user_id, channel_name, ONLINE)
     r.hdel(_user_key(user_id), "manual_away")
@@ -291,10 +227,9 @@ def get_statuses(user_ids: Iterable[int]) -> dict[int, dict]:
 
 
 def get_peer_user_ids(user_id: int) -> list[int]:
-    """
-    Return distinct user ids who share at least one conversation with
-    *user_id*. Excludes the user themselves. Drives the presence fanout
-    audience — strangers never see each other's status.
+    """Everyone who shares a conversation with *user_id*, excluding them.
+
+    The presence audience: strangers never see each other's status.
     """
     own_conv_ids = Participant.objects.filter(user_id=user_id).values_list(
         "conversation_id", flat=True
