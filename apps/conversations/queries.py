@@ -13,7 +13,6 @@ Keeping these at module level rather than as consumer methods makes them:
 from channels.db import database_sync_to_async
 
 from apps.conversations.models import Message, Participant
-from apps.conversations.services.message_service import create_message
 
 
 @database_sync_to_async
@@ -29,16 +28,6 @@ def get_conversation_for_user(user, conversation_id):
         return participant.conversation
     except Participant.DoesNotExist:
         return None
-
-
-@database_sync_to_async
-def db_create_message(conversation, user, content: str):
-    """
-    Persist a new Message and update the conversation's last_message pointer.
-    Delegates to the shared message_service to keep business logic consistent
-    with the REST API.
-    """
-    return create_message(conversation, user, content)
 
 
 @database_sync_to_async

@@ -11,7 +11,7 @@ from apps.conversations.api.serializers.message import (
 from apps.conversations.models import Message
 from apps.conversations.pagination import MessageCursorPagination
 from apps.conversations.permissions import IsConversationParticipant
-from apps.conversations.services.message_service import create_message
+from apps.conversations.services.message_service import post_message
 from apps.conversations.services.realtime import (
     broadcast_message_deleted,
     broadcast_message_edited,
@@ -44,7 +44,7 @@ class MessageView(APIView):
         serializer = SendOrEditMessageSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
-        message = create_message(
+        message = post_message(
             conversation=conversation,
             sender=request.user,
             content=serializer.validated_data["content"],

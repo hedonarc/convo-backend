@@ -5,16 +5,15 @@ import logging
 from channels.db import database_sync_to_async
 from channels.generic.websocket import AsyncWebsocketConsumer
 
-from apps.conversations.api.serializers.message import MessageSerializer
 from apps.conversations.constants import MAX_MESSAGE_LENGTH
 from apps.conversations.queries import (
-    db_create_message,
     get_conversation_for_user,
     message_belongs_to_conversation,
     update_read_receipt,
 )
 from apps.conversations.services import fanout, presence
 from apps.conversations.services.delivery import is_peer_message, record_delivery
+from apps.conversations.services.message_service import post_message_async
 from apps.conversations.services.realtime import broadcast_conversation_update
 from utils.translations import t
 
@@ -136,14 +135,7 @@ class ConversationConsumer(RejectsWithCode, AsyncWebsocketConsumer):
             )
             return
 
-        message = await db_create_message(self.conversation, self.user, content)
-
-        # MessageSerializer gives us a consistent payload identical to the REST API.
-        message_data = dict(MessageSerializer(message).data)
-
-        await fanout.to_conversation(
-            self.conversation.id, fanout.NEW_MESSAGE, message=message_data
-        )
+        await post_message_async(self.conversation, self.user, content)
 
     async def handle_typing(self, data: dict):
         """
