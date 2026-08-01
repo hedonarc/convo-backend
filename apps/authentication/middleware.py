@@ -1,6 +1,5 @@
 from http.cookies import SimpleCookie
 import logging
-from urllib.parse import parse_qs
 
 from channels.db import database_sync_to_async
 from django.conf import settings
@@ -13,12 +12,12 @@ logger = logging.getLogger(__name__)
 
 User = get_user_model()
 
+MAX_TOKEN_LENGTH = 2048
+
 
 @database_sync_to_async
 def get_user(token_key):
-    """
-    Validates the token and returns the corresponding user.
-    """
+    """Resolve a token to its user, or AnonymousUser if it does not hold up."""
     try:
         token = AccessToken(token_key)
         user_id = token["user_id"]
@@ -28,6 +27,23 @@ def get_user(token_key):
     except Exception as e:
         logger.exception("Unexpected error during token validation: %s", e)
         return AnonymousUser()
+
+
+def access_token_from(scope) -> str | None:
+    """Read the access token from the handshake's cookie header.
+
+    Cookies only. A token in the query string would be written to proxy and
+    access logs, and the browser sends the httpOnly cookie on the WebSocket
+    handshake anyway.
+    """
+    raw_cookie_header = dict(scope.get("headers", [])).get(b"cookie", b"").decode()
+    cookie = SimpleCookie()
+    cookie.load(raw_cookie_header)
+
+    morsel = cookie.get(settings.SIMPLE_JWT.get("AUTH_COOKIE", "access_token"))
+    if morsel is None or len(morsel.value) > MAX_TOKEN_LENGTH:
+        return None
+    return morsel.value or None
 
 
 async def reject(receive, send, code):
@@ -43,38 +59,19 @@ async def reject(receive, send, code):
 
 
 class JWTAuthMiddleware:
-    """
-    Authenticate WebSocket connections using JWT token in query string.
-    Rejects connection if token is missing or invalid.
-    """
+    """Authenticate a WebSocket handshake from the auth cookie."""
 
     def __init__(self, inner):
         self.inner = inner
 
     async def __call__(self, scope, receive, send):
-        # Extract token from query string
-        query_string = scope.get("query_string", b"").decode()
-        query_params = parse_qs(query_string)
-
-        token_list = query_params.get("token")
-        token_key = token_list[0] if token_list else None
-
-        # Prefer httpOnly cookie over query string
-        raw_cookie_header = dict(scope.get("headers", [])).get(b"cookie", b"").decode()
-        cookie = SimpleCookie()
-        cookie.load(raw_cookie_header)
-        cookie_name = settings.SIMPLE_JWT.get("AUTH_COOKIE", "access_token")
-        morsel = cookie.get(cookie_name)
-        if morsel:
-            token_key = morsel.value
-
-        if not token_key or len(token_key) > 2048:
+        token_key = access_token_from(scope)
+        if not token_key:
             logger.error("WebSocket Connection Rejected : No Token")
             await reject(receive, send, 4001)
             return
 
         user = await get_user(token_key)
-
         if user.is_anonymous:
             logger.error("WebSocket Connection Rejected : Invalid Token")
             await reject(receive, send, 4002)
