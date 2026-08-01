@@ -16,8 +16,29 @@ Convo uses **Django Channels** to handle WebSocket connections.
 
 - **ASGI Server:** Daphne is used as the ASGI application server.
 - **Consumer Logic:** We use asynchronous consumers (`AsyncWebsocketConsumer`) to manage long-lived connections efficiently.
-- **Query Decoupling:** To keep consumers clean, all database interactions are abstracted into a `queries.py` module and wrapped in `database_sync_to_async`.
 - **Channel Layer:** A Redis-backed channel layer (`channels_redis`) is used for group communication (e.g., broadcasting messages to all participants in a conversation).
+
+## Where the rules live
+
+Consumers parse frames and write to sockets. Everything else sits in
+`services/`, grouped by the rule it owns rather than by mechanism:
+
+| module | owns |
+|---|---|
+| `message_service` | persisting a message and announcing it |
+| `delivery` | when a message counts as delivered |
+| `read_receipts` | how far a participant has read |
+| `presence` | online / away / offline across a user's tabs |
+| `conversation_service` | creating conversations, and who belongs to one |
+| `realtime` | what each announcement contains |
+| `fanout` | group names and event types |
+| `redis_store` | the presence store's connection |
+
+Each is `async`-callable where a consumer needs it; the
+`database_sync_to_async` wrapping is an implementation detail rather than a
+module of its own. A previous `queries.py` grouped every ORM call together
+because they shared that wrapper, which meant a single rule — advancing a
+delivery pointer, say — was split across two files.
 
 ## Redis has two jobs
 

@@ -1,5 +1,26 @@
+from channels.db import database_sync_to_async
+
 from apps.conversations.models import Conversation, Participant
 from apps.conversations.services.realtime import broadcast_conversation_update
+
+
+def conversation_for_participant(user, conversation_id) -> Conversation | None:
+    """The conversation, if *user* is a participant — otherwise None.
+
+    The authorization check behind every socket connection and every receipt.
+    """
+    try:
+        participant = Participant.objects.select_related("conversation").get(
+            user=user, conversation_id=conversation_id
+        )
+        return participant.conversation
+    except Participant.DoesNotExist:
+        return None
+
+
+conversation_for_participant_async = database_sync_to_async(
+    conversation_for_participant
+)
 
 
 def generate_conversation_key(user1, user2):
