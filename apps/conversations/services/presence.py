@@ -49,11 +49,10 @@ import logging
 import os
 import time
 
-from asgiref.sync import async_to_sync
-from channels.layers import get_channel_layer
 import redis
 
 from apps.conversations.models import Participant
+from apps.conversations.services import fanout
 
 logger = logging.getLogger(__name__)
 
@@ -337,39 +336,18 @@ def get_peer_user_ids(user_id: int) -> list[int]:
 # ── Broadcast ───────────────────────────────────────────────────────────────
 
 
+@fanout.best_effort
 def broadcast_presence(user_id: int) -> None:
+    """Tell every conversation peer — and the user's own tabs — the new status.
+
+    Self is in the audience so the account menu's active-check confirms a
+    manual flip, and so a user's other tabs stay in step.
     """
-    Push the current status of *user_id* to every conversation peer's
-    per-user channel AND to the user's own channel.
-
-    Including self matters for two reasons:
-      1. The account menu shows an "active check" beside the user's
-         current status. Without a self-broadcast, manual flips
-         ("Set as Away") never appear in the UI even though peers
-         correctly see the change.
-      2. A user with multiple tabs / devices keeps all of them in sync
-         when any one of them initiates a status change.
-
-    Failures are logged and swallowed so a Redis hiccup can't break
-    socket handling.
-    """
-    channel_layer = get_channel_layer()
-    if channel_layer is None:
-        return
-
-    try:
-        payload = get_status(user_id)
-        audience = [user_id, *get_peer_user_ids(user_id)]
-        send = async_to_sync(channel_layer.group_send)
-        for pid in audience:
-            send(
-                f"user_{pid}",
-                {
-                    "type": "presence_changed_event",
-                    "user_id": user_id,
-                    "status": payload["status"],
-                    "last_seen_at": payload["last_seen_at"],
-                },
-            )
-    except Exception:
-        logger.exception("Failed to broadcast presence for user=%s", user_id)
+    payload = get_status(user_id)
+    fanout.to_users_sync(
+        [user_id, *get_peer_user_ids(user_id)],
+        fanout.PRESENCE_CHANGED,
+        user_id=user_id,
+        status=payload["status"],
+        last_seen_at=payload["last_seen_at"],
+    )
