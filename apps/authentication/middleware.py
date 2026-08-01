@@ -30,6 +30,18 @@ def get_user(token_key):
         return AnonymousUser()
 
 
+async def reject(receive, send, code):
+    """Close the handshake with *code* in a way the browser can read.
+
+    Daphne answers a close sent before `websocket.accept` with an HTTP 403
+    handshake rejection and discards the application code, so the browser
+    reports 1006. Accepting first costs one frame and delivers the real code.
+    """
+    await receive()
+    await send({"type": "websocket.accept"})
+    await send({"type": "websocket.close", "code": code})
+
+
 class JWTAuthMiddleware:
     """
     Authenticate WebSocket connections using JWT token in query string.
@@ -57,20 +69,17 @@ class JWTAuthMiddleware:
             token_key = morsel.value
 
         if not token_key or len(token_key) > 2048:
-            # ❌ No token provided
             logger.error("WebSocket Connection Rejected : No Token")
-            await send({"type": "websocket.close", "code": 4001})
+            await reject(receive, send, 4001)
             return
 
         user = await get_user(token_key)
 
         if user.is_anonymous:
-            # ❌ Invalid or expired token
             logger.error("WebSocket Connection Rejected : Invalid Token")
-            await send({"type": "websocket.close", "code": 4002})
+            await reject(receive, send, 4002)
             return
 
-        # ✅ Successfully authenticated
         scope["user"] = user
         return await self.inner(scope, receive, send)
 
