@@ -1,11 +1,25 @@
 from asgiref.sync import async_to_sync
 from channels.testing import WebsocketCommunicator
+from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.test import TransactionTestCase, override_settings
 from rest_framework_simplejwt.tokens import AccessToken
 
 from apps.conversations.models import Conversation, Participant
 from config.asgi import application
+
+AUTH_COOKIE = settings.SIMPLE_JWT["AUTH_COOKIE"]
+
+
+def socket(path, user=None, token=None):
+    """A communicator authenticated the way a browser is — via the cookie."""
+    headers = []
+    if user is not None:
+        token = str(AccessToken.for_user(user))
+    if token is not None:
+        headers.append((b"cookie", f"{AUTH_COOKIE}={token}".encode()))
+    return WebsocketCommunicator(application, path, headers=headers)
+
 
 User = get_user_model()
 
@@ -36,9 +50,8 @@ class WebSocketAuthTests(TransactionTestCase):
         """A valid token opens the socket and keeps it open."""
 
         async def _test():
-            communicator = WebsocketCommunicator(
-                application,
-                f"/ws/conversations/{self.conversation.id}/?token={self.token}",
+            communicator = socket(
+                f"/ws/conversations/{self.conversation.id}/", self.user
             )
             connected, _ = await communicator.connect()
 
@@ -54,10 +67,7 @@ class WebSocketAuthTests(TransactionTestCase):
         """A missing token reaches the client as 4001, not a 1006 handshake failure."""
 
         async def _test():
-            communicator = WebsocketCommunicator(
-                application,
-                f"/ws/conversations/{self.conversation.id}/",
-            )
+            communicator = socket(f"/ws/conversations/{self.conversation.id}/")
             frame = await self._close_frame(communicator)
 
             self.assertEqual(frame["type"], "websocket.close")
@@ -69,9 +79,8 @@ class WebSocketAuthTests(TransactionTestCase):
         """An invalid token reaches the client as 4002 so it can try a refresh."""
 
         async def _test():
-            communicator = WebsocketCommunicator(
-                application,
-                f"/ws/conversations/{self.conversation.id}/?token=invalid_token",
+            communicator = socket(
+                f"/ws/conversations/{self.conversation.id}/", token="invalid_token"
             )
             frame = await self._close_frame(communicator)
 
@@ -85,12 +94,10 @@ class WebSocketAuthTests(TransactionTestCase):
         outsider = User.objects.create_user(
             username="outsider", email="outsider@example.com", password="password"
         )
-        outsider_token = str(AccessToken.for_user(outsider))
 
         async def _test():
-            communicator = WebsocketCommunicator(
-                application,
-                f"/ws/conversations/{self.conversation.id}/?token={outsider_token}",
+            communicator = socket(
+                f"/ws/conversations/{self.conversation.id}/", outsider
             )
             frame = await self._close_frame(communicator)
 
@@ -103,7 +110,22 @@ class WebSocketAuthTests(TransactionTestCase):
         """The per-user socket rejects through the same path."""
 
         async def _test():
-            communicator = WebsocketCommunicator(application, "/ws/user/")
+            communicator = socket("/ws/user/")
+            frame = await self._close_frame(communicator)
+
+            self.assertEqual(frame["type"], "websocket.close")
+            self.assertEqual(frame["code"], 4001)
+
+        async_to_sync(_test)()
+
+    def test_a_token_in_the_query_string_is_ignored(self):
+        """Tokens in URLs end up in proxy and access logs, so only the cookie counts."""
+
+        async def _test():
+            communicator = WebsocketCommunicator(
+                application,
+                f"/ws/conversations/{self.conversation.id}/?token={self.token}",
+            )
             frame = await self._close_frame(communicator)
 
             self.assertEqual(frame["type"], "websocket.close")
@@ -132,9 +154,7 @@ class DeliveryReceiptFlowTests(TransactionTestCase):
         )
 
     async def _connect(self, path, user):
-        communicator = WebsocketCommunicator(
-            application, f"{path}?token={AccessToken.for_user(user)}"
-        )
+        communicator = socket(path, user)
         await communicator.connect()
         return communicator
 
