@@ -6,15 +6,11 @@ looking at, so both consumers route through `record_delivery` rather than each
 carrying its own copy of the rule.
 """
 
-import logging
-
 from channels.db import database_sync_to_async
-from channels.layers import get_channel_layer
 
 from apps.conversations.models import Conversation, Participant
+from apps.conversations.services import fanout
 from apps.conversations.services.realtime import broadcast_conversation_update
-
-logger = logging.getLogger(__name__)
 
 
 def is_peer_message(message: dict | None, user) -> bool:
@@ -65,23 +61,11 @@ async def record_delivery(user, conversation_id: int, message_id: int) -> bool:
     if conversation is None:
         return False
 
-    channel_layer = get_channel_layer()
-    if channel_layer is not None:
-        try:
-            await channel_layer.group_send(
-                f"conversation_{conversation_id}",
-                {
-                    "type": "delivered_event",
-                    "user_id": user.id,
-                    "message_id": message_id,
-                },
-            )
-        except Exception:
-            logger.exception(
-                "Failed to broadcast delivery receipt for user=%s message=%s",
-                user.id,
-                message_id,
-            )
-
+    await fanout.to_conversation(
+        conversation_id,
+        fanout.DELIVERY_RECEIPT,
+        user_id=user.id,
+        message_id=message_id,
+    )
     await database_sync_to_async(broadcast_conversation_update)(conversation)
     return True

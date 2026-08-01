@@ -13,7 +13,7 @@ from apps.conversations.queries import (
     message_belongs_to_conversation,
     update_read_receipt,
 )
-from apps.conversations.services import presence
+from apps.conversations.services import fanout, presence
 from apps.conversations.services.delivery import is_peer_message, record_delivery
 from apps.conversations.services.realtime import broadcast_conversation_update
 from utils.translations import t
@@ -69,7 +69,7 @@ class ConversationConsumer(RejectsWithCode, AsyncWebsocketConsumer):
             await self.reject(4003)
             return
 
-        self.room_group_name = f"conversation_{self.conversation_id}"
+        self.room_group_name = fanout.conversation_group(self.conversation_id)
 
         await self.channel_layer.group_add(self.room_group_name, self.channel_name)
         await self.accept()
@@ -141,27 +141,19 @@ class ConversationConsumer(RejectsWithCode, AsyncWebsocketConsumer):
         # MessageSerializer gives us a consistent payload identical to the REST API.
         message_data = dict(MessageSerializer(message).data)
 
-        await self.channel_layer.group_send(
-            self.room_group_name,
-            {
-                "type": "chat_message_event",
-                "message": message_data,
-            },
+        await fanout.to_conversation(
+            self.conversation.id, fanout.NEW_MESSAGE, message=message_data
         )
 
     async def handle_typing(self, data: dict):
         """
         Broadcast a typing indicator to all other participants in the room.
         """
-        is_typing = bool(data.get("is_typing", True))
-
-        await self.channel_layer.group_send(
-            self.room_group_name,
-            {
-                "type": "typing_event",
-                "user_id": self.user.id,
-                "is_typing": is_typing,
-            },
+        await fanout.to_conversation(
+            self.conversation.id,
+            fanout.TYPING,
+            user_id=self.user.id,
+            is_typing=bool(data.get("is_typing", True)),
         )
 
     async def handle_read_receipt(self, data: dict):
@@ -187,14 +179,11 @@ class ConversationConsumer(RejectsWithCode, AsyncWebsocketConsumer):
 
         await update_read_receipt(self.user, self.conversation, message_id)
 
-        # In-conversation peers get the seen indicator update.
-        await self.channel_layer.group_send(
-            self.room_group_name,
-            {
-                "type": "read_event",
-                "user_id": self.user.id,
-                "message_id": message_id,
-            },
+        await fanout.to_conversation(
+            self.conversation.id,
+            fanout.READ_RECEIPT,
+            user_id=self.user.id,
+            message_id=message_id,
         )
 
         # Sidebar / unread-dot also needs to know — fan out the updated
@@ -334,7 +323,7 @@ class UserConsumer(RejectsWithCode, AsyncWebsocketConsumer):
             await self.reject(4001)
             return
 
-        self.room_group_name = f"user_{self.user.id}"
+        self.room_group_name = fanout.user_group(self.user.id)
         await self.channel_layer.group_add(self.room_group_name, self.channel_name)
         await self.accept()
 
@@ -395,22 +384,24 @@ class UserConsumer(RejectsWithCode, AsyncWebsocketConsumer):
             raise
 
     async def receive(self, text_data):
-        """Route inbound frames — currently just the `visibility` ping."""
+        """Parse an inbound frame and route it to its action handler."""
         try:
             payload = json.loads(text_data)
             action = payload.get("action")
             data = payload.get("data", {})
         except (json.JSONDecodeError, AttributeError):
-            await self.send(
-                text_data=json.dumps(
-                    {"type": "error", "message": t("websocket.invalid_json")}
-                )
-            )
+            await self.send_error(t("websocket.invalid_json"))
             return
 
         handler_name = self.USER_ACTION_HANDLERS.get(action)
         if handler_name:
             await getattr(self, handler_name)(data)
+        else:
+            await self.send_error(t("websocket.unknown_action").format(action=action))
+
+    async def send_error(self, message: str):
+        """Send a structured error frame to the connected client."""
+        await self.send(text_data=json.dumps({"type": "error", "message": message}))
 
     async def handle_visibility(self, data: dict):
         """Mark this socket online (tab visible) or away (tab hidden)."""

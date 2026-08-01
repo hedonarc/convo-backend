@@ -4,7 +4,7 @@ from django.contrib.auth import get_user_model
 from django.test import TestCase
 
 from apps.conversations.models import Conversation, Participant
-from apps.conversations.services import presence
+from apps.conversations.services import fanout, presence
 
 User = get_user_model()
 
@@ -429,15 +429,14 @@ class PresenceBroadcastAudienceTests(TestCase):
     def test_broadcast_includes_self_alongside_peers(self):
         sent_to: list[str] = []
 
-        class _Layer:
-            async def group_send(self, group, _payload):
-                sent_to.append(group)
+        async def _record(group, _event_type, **_payload):
+            sent_to.append(group)
 
-        with patch.object(presence, "get_channel_layer", return_value=_Layer()):
+        with patch.object(fanout, "send", _record):
             presence.mark_online(self.alice.id, "ch")
             presence.broadcast_presence(self.alice.id)
 
         # Alice initiated the change and must receive it (so her menu
         # updates), and Bob is a conversation peer so he gets it too.
-        self.assertIn(f"user_{self.alice.id}", sent_to)
-        self.assertIn(f"user_{self.bob.id}", sent_to)
+        self.assertIn(fanout.user_group(self.alice.id), sent_to)
+        self.assertIn(fanout.user_group(self.bob.id), sent_to)
