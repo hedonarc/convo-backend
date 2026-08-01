@@ -22,7 +22,19 @@ from utils.translations import t
 logger = logging.getLogger(__name__)
 
 
-class ConversationConsumer(AsyncWebsocketConsumer):
+class RejectsWithCode:
+    """Mixin giving consumers a close the browser can actually read.
+
+    Daphne answers a close sent before `accept` with an HTTP 403 handshake
+    rejection and discards the application code, so the browser reports 1006.
+    """
+
+    async def reject(self, code: int) -> None:
+        await self.accept()
+        await self.close(code=code)
+
+
+class ConversationConsumer(RejectsWithCode, AsyncWebsocketConsumer):
     # Mapping of client-sent action names → handler method names.
     # Built once at class definition time instead of on every incoming frame.
     ACTION_HANDLERS = {
@@ -42,7 +54,7 @@ class ConversationConsumer(AsyncWebsocketConsumer):
         # Defensive guard — JWTAuthMiddleware already blocks anonymous users
         # before reaching this point, but we keep this as an explicit safety net.
         if not self.user.is_authenticated:
-            await self.close(code=4001)
+            await self.reject(4001)
             return
 
         # Authorization — user must be a participant in the conversation.
@@ -55,7 +67,7 @@ class ConversationConsumer(AsyncWebsocketConsumer):
                 self.user.id,
                 self.conversation_id,
             )
-            await self.close(code=4003)
+            await self.reject(4003)
             return
 
         self.room_group_name = f"conversation_{self.conversation_id}"
@@ -306,7 +318,7 @@ class ConversationConsumer(AsyncWebsocketConsumer):
         await self.send(text_data=json.dumps({"type": "error", "message": message}))
 
 
-class UserConsumer(AsyncWebsocketConsumer):
+class UserConsumer(RejectsWithCode, AsyncWebsocketConsumer):
     """
     One connection per logged-in user. Joins the per-user fanout group
     `user_<id>` so the server can push events spanning any conversation the
@@ -342,7 +354,7 @@ class UserConsumer(AsyncWebsocketConsumer):
 
         # Defensive — JWTAuthMiddleware already blocks anonymous users.
         if not self.user.is_authenticated:
-            await self.close(code=4001)
+            await self.reject(4001)
             return
 
         self.room_group_name = f"user_{self.user.id}"
