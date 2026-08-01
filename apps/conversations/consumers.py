@@ -10,12 +10,11 @@ from apps.conversations.constants import MAX_MESSAGE_LENGTH
 from apps.conversations.queries import (
     db_create_message,
     get_conversation_for_user,
-    get_conversation_if_participant,
     message_belongs_to_conversation,
-    update_delivery_receipt,
     update_read_receipt,
 )
 from apps.conversations.services import presence
+from apps.conversations.services.delivery import is_peer_message, record_delivery
 from apps.conversations.services.realtime import broadcast_conversation_update
 from utils.translations import t
 
@@ -211,33 +210,11 @@ class ConversationConsumer(RejectsWithCode, AsyncWebsocketConsumer):
     # -------------------------------------------------------------------------
 
     async def chat_message_event(self, event):
-        """Deliver a new message to the connected WebSocket client.
-
-        Auto-marks delivery for peer-sent messages — by the time this handler
-        runs, the message has been pushed to this participant's socket, so we
-        know the client received it. Skips own sends (we don't deliver to
-        ourselves) and short-circuits if the pointer is already at/past this id.
-        """
+        """Deliver a new message to the connected client, recording the receipt."""
         message = event["message"]
 
-        if message["sender"] != self.user.id:
-            changed = await update_delivery_receipt(
-                self.user, self.conversation, message["id"]
-            )
-            if changed:
-                await self.channel_layer.group_send(
-                    self.room_group_name,
-                    {
-                        "type": "delivered_event",
-                        "user_id": self.user.id,
-                        "message_id": message["id"],
-                    },
-                )
-                # Sidebar / sender's other tabs need the updated delivery
-                # pointer — fan out the fresh conversation snapshot.
-                await database_sync_to_async(broadcast_conversation_update)(
-                    self.conversation
-                )
+        if is_peer_message(message, self.user):
+            await record_delivery(self.user, self.conversation.id, message["id"])
 
         await self.send(text_data=json.dumps({"type": "new_message", "data": message}))
 
@@ -477,56 +454,18 @@ class UserConsumer(RejectsWithCode, AsyncWebsocketConsumer):
     async def conversation_updated_event(self, event):
         """Push a conversation snapshot to the connected client.
 
-        Also doubles as the "delivered" trigger when the user isn't actively
-        subscribed to the conversation's room (e.g. they're viewing a
-        different chat). In that case the per-conversation `chat_message_event`
-        handler — which normally bumps `last_delivered_message_id` — never
-        runs for this user, so the sender would be stuck on the single-tick
-        "Sent" state. We catch up by marking delivery here whenever the
-        incoming snapshot brings a fresh peer message.
-
-        Idempotency: `update_delivery_receipt` only writes when the incoming
-        id is strictly newer, so the secondary `broadcast_conversation_update`
-        we fire on a successful bump cannot recurse — the next pass through
-        this handler sees the already-bumped pointer and short-circuits.
+        This is the only place a delivery pointer can advance for a user who
+        is not currently in the conversation's room — without it the sender
+        would sit on a single tick while the recipient reads another chat.
         """
         conversation = event["conversation"]
         last_message = conversation.get("last_message")
 
-        if (
-            last_message
-            and not last_message.get("is_deleted")
-            and last_message.get("sender") != self.user.id
+        if is_peer_message(last_message, self.user) and await record_delivery(
+            self.user, conversation["id"], last_message["id"]
         ):
-            conversation_id = conversation["id"]
-            message_id = last_message["id"]
-            changed = await update_delivery_receipt(
-                self.user, conversation_id, message_id
-            )
-            if changed:
-                # Tell anyone currently in the conversation room (most
-                # importantly: the sender) about the delivery so their
-                # MessagePane updates without waiting for the next snapshot.
-                await self.channel_layer.group_send(
-                    f"conversation_{conversation_id}",
-                    {
-                        "type": "delivered_event",
-                        "user_id": self.user.id,
-                        "message_id": message_id,
-                    },
-                )
-                # Re-broadcast the snapshot so every per-user channel —
-                # including the sender's — sees the updated delivery pointer
-                # in `delivery_receipts`. We skip forwarding the *stale*
-                # snapshot below since a fresh one is already on the wire.
-                refreshed = await get_conversation_if_participant(
-                    self.user, conversation_id
-                )
-                if refreshed is not None:
-                    await database_sync_to_async(broadcast_conversation_update)(
-                        refreshed
-                    )
-                    return
+            # A fresher snapshot is already on the wire; ours is now stale.
+            return
 
         await self.send(
             text_data=json.dumps({"type": "conversation_updated", "data": conversation})
