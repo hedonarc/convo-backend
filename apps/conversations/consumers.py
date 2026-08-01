@@ -6,15 +6,13 @@ from channels.db import database_sync_to_async
 from channels.generic.websocket import AsyncWebsocketConsumer
 
 from apps.conversations.constants import MAX_MESSAGE_LENGTH
-from apps.conversations.queries import (
-    get_conversation_for_user,
-    message_belongs_to_conversation,
-    update_read_receipt,
-)
 from apps.conversations.services import fanout, presence
+from apps.conversations.services.conversation_service import (
+    conversation_for_participant_async,
+)
 from apps.conversations.services.delivery import is_peer_message, record_delivery
 from apps.conversations.services.message_service import post_message_async
-from apps.conversations.services.realtime import broadcast_conversation_update
+from apps.conversations.services.read_receipts import record_read
 from utils.translations import t
 
 logger = logging.getLogger(__name__)
@@ -56,7 +54,7 @@ class ConversationConsumer(RejectsWithCode, AsyncWebsocketConsumer):
             return
 
         # Authorization — user must be a participant in the conversation.
-        self.conversation = await get_conversation_for_user(
+        self.conversation = await conversation_for_participant_async(
             self.user, self.conversation_id
         )
         if self.conversation is None:
@@ -162,27 +160,8 @@ class ConversationConsumer(RejectsWithCode, AsyncWebsocketConsumer):
             await self.send_error("A valid integer message_id is required")
             return
 
-        message_exists = await message_belongs_to_conversation(
-            self.conversation, message_id
-        )
-        if not message_exists:
+        if not await record_read(self.user, self.conversation, message_id):
             await self.send_error(t("messages.not_found_in_conversation"))
-            return
-
-        await update_read_receipt(self.user, self.conversation, message_id)
-
-        await fanout.to_conversation(
-            self.conversation.id,
-            fanout.READ_RECEIPT,
-            user_id=self.user.id,
-            message_id=message_id,
-        )
-
-        # Sidebar / unread-dot also needs to know — fan out the updated
-        # conversation (with refreshed read_receipts) to every participant's
-        # per-user channel. Wrapped via database_sync_to_async because the
-        # sync broadcaster reads from the DB and uses async_to_sync internally.
-        await database_sync_to_async(broadcast_conversation_update)(self.conversation)
 
     # -------------------------------------------------------------------------
     # Group Event Handlers
