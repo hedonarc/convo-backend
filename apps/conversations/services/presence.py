@@ -46,13 +46,10 @@ from __future__ import annotations
 from collections.abc import Iterable
 from datetime import UTC, datetime
 import logging
-import os
 import time
 
-import redis
-
 from apps.conversations.models import Participant
-from apps.conversations.services import fanout
+from apps.conversations.services import fanout, redis_store
 
 logger = logging.getLogger(__name__)
 
@@ -66,30 +63,7 @@ OFFLINE = "offline"
 # consumer side so a single missed beat doesn't sweep the connection.
 PRESENCE_TTL_SECONDS = 90
 
-# Mirrors CHANNEL_LAYERS["default"]["CONFIG"]["hosts"] in settings/base.py.
-# Kept hardcoded for now to avoid pulling channels_redis internals; if the
-# host ever moves, both will need updating in lockstep.
-_REDIS_HOST = "127.0.0.1"
-_REDIS_PORT = 6379
-_REDIS_DB = 0
-
-_client: redis.Redis | None = None
-
-
-def _redis() -> redis.Redis:
-    global _client
-    if _client is None:
-        redis_url = os.environ.get("REDIS_URL")
-        if redis_url:
-            _client = redis.from_url(redis_url, decode_responses=True)
-        else:
-            _client = redis.Redis(
-                host=_REDIS_HOST,
-                port=_REDIS_PORT,
-                db=_REDIS_DB,
-                decode_responses=True,
-            )
-    return _client
+_redis = redis_store.client
 
 
 def _user_key(user_id: int) -> str:

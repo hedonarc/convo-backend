@@ -53,48 +53,15 @@ def _check_database() -> None:
 
 
 def _check_redis() -> None:
-    """Sync Redis PING against the channel layer's configured host. Skips
-    silently if the backend isn't Redis (e.g. InMemoryChannelLayer in tests
-    or when Channels isn't fully configured)."""
-    channel_layers = getattr(settings, "CHANNEL_LAYERS", {})
-    default = channel_layers.get("default", {})
-    backend = default.get("BACKEND", "")
-    if "redis" not in backend.lower():
-        logger.info("[startup] channel layer is %s — skipping Redis check", backend)
-        return
+    """Best-effort Redis ping at boot, through the same client presence uses.
 
-    hosts = default.get("CONFIG", {}).get("hosts", [])
-    if not hosts:
-        logger.warning("[startup] Redis channel layer configured with no hosts")
-        return
+    The channel layer reads the same `REDIS_URL`, so one ping covers both.
+    """
+    from apps.conversations.services import redis_store
 
-    host = hosts[0]
     try:
-        import redis  # transitively available via channels-redis
-
-        # channels-redis accepts three host shapes — handle all of them.
-        # The tuple form is the most common in dev configs; the old probe
-        # only handled str + dict and crashed the startup log with
-        # "argument after ** must be a mapping, not tuple" on tuple hosts.
-        if isinstance(host, str):
-            client = redis.from_url(host)
-            label = _redact(host)
-        elif isinstance(host, dict):
-            client = redis.Redis(**host)
-            label = "<dict>"
-        elif isinstance(host, tuple | list) and len(host) >= 2:
-            client = redis.Redis(host=host[0], port=int(host[1]))
-            label = f"{host[0]}:{host[1]}"
-        else:
-            logger.warning(
-                "[startup] redis host has unsupported shape: %r — skipping check",
-                host,
-            )
-            return
-
-        client.ping()
-        client.close()
-        logger.info("[startup] redis connected: %s", label)
+        redis_store.client().ping()
+        logger.info("[startup] redis connected: %s", _redact(settings.REDIS_URL))
     except Exception as exc:
         logger.error("[startup] redis connection FAILED: %s", exc)
 
