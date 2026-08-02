@@ -8,6 +8,8 @@ from django.contrib.auth.models import AnonymousUser
 from rest_framework_simplejwt.exceptions import TokenError
 from rest_framework_simplejwt.tokens import AccessToken
 
+from utils import ws
+
 logger = logging.getLogger(__name__)
 
 User = get_user_model()
@@ -47,14 +49,16 @@ def access_token_from(scope) -> str | None:
 
 
 async def reject(receive, send, code):
-    """Close the handshake with *code* in a way the browser can read.
+    """Refuse the handshake in a way the browser can actually read.
 
-    Daphne answers a close sent before `websocket.accept` with an HTTP 403
-    handshake rejection and discards the application code, so the browser
-    reports 1006. Accepting first costs one frame and delivers the real code.
+    Two hazards, one after the other. Daphne turns a close sent before
+    `websocket.accept` into an HTTP 403 and drops the code, so we accept
+    first. Then the proxy in front of the app drops a close frame sent that
+    soon after the upgrade, so the reason also travels as data.
     """
     await receive()
     await send({"type": "websocket.accept"})
+    await send({"type": "websocket.send", "text": ws.rejection_frame(code)})
     await send({"type": "websocket.close", "code": code})
 
 
@@ -68,13 +72,13 @@ class JWTAuthMiddleware:
         token_key = access_token_from(scope)
         if not token_key:
             logger.error("WebSocket Connection Rejected : No Token")
-            await reject(receive, send, 4001)
+            await reject(receive, send, ws.NO_TOKEN)
             return
 
         user = await get_user(token_key)
         if user.is_anonymous:
             logger.error("WebSocket Connection Rejected : Invalid Token")
-            await reject(receive, send, 4002)
+            await reject(receive, send, ws.INVALID_TOKEN)
             return
 
         scope["user"] = user
