@@ -27,18 +27,19 @@ IN_MEMORY_LAYER = {"default": {"BACKEND": "channels.layers.InMemoryChannelLayer"
 
 
 class WebSocketAuthTests(TransactionTestCase):
-    async def _close_frame(self, communicator):
-        """Connect and return the close frame the client ends up with.
+    async def _rejection(self, communicator):
+        """Connect and return (error frame, close frame) for a refused socket.
 
-        A rejection is delivered as accept-then-close so the code survives the
-        handshake, which means `connect()` reports success and the real verdict
-        arrives in the following frame.
+        A rejection is accept, error frame, close. `connect()` therefore
+        reports success and the real verdict arrives in the frames after it.
         """
         connected, _ = await communicator.connect()
         self.assertTrue(
             connected, "handshake must be accepted for a close code to reach the client"
         )
-        return await communicator.receive_output()
+        error = await communicator.receive_json_from()
+        close = await communicator.receive_output()
+        return error, close
 
     def setUp(self):
         self.user = User.objects.create_user(username="testuser", password="password")
@@ -57,6 +58,9 @@ class WebSocketAuthTests(TransactionTestCase):
 
             self.assertTrue(connected)
             self.assertEqual(communicator.scope["user"].username, "testuser")
+
+            hello = await communicator.receive_json_from()
+            self.assertEqual(hello["type"], "connected")
             self.assertTrue(await communicator.receive_nothing())
 
             await communicator.disconnect()
@@ -68,10 +72,12 @@ class WebSocketAuthTests(TransactionTestCase):
 
         async def _test():
             communicator = socket(f"/ws/conversations/{self.conversation.id}/")
-            frame = await self._close_frame(communicator)
+            error, close = await self._rejection(communicator)
 
-            self.assertEqual(frame["type"], "websocket.close")
-            self.assertEqual(frame["code"], 4001)
+            self.assertEqual(error["type"], "error")
+            self.assertEqual(error["code"], 4001)
+            self.assertEqual(close["type"], "websocket.close")
+            self.assertEqual(close["code"], 4001)
 
         async_to_sync(_test)()
 
@@ -82,10 +88,12 @@ class WebSocketAuthTests(TransactionTestCase):
             communicator = socket(
                 f"/ws/conversations/{self.conversation.id}/", token="invalid_token"
             )
-            frame = await self._close_frame(communicator)
+            error, close = await self._rejection(communicator)
 
-            self.assertEqual(frame["type"], "websocket.close")
-            self.assertEqual(frame["code"], 4002)
+            self.assertEqual(error["type"], "error")
+            self.assertEqual(error["code"], 4002)
+            self.assertEqual(close["type"], "websocket.close")
+            self.assertEqual(close["code"], 4002)
 
         async_to_sync(_test)()
 
@@ -99,10 +107,12 @@ class WebSocketAuthTests(TransactionTestCase):
             communicator = socket(
                 f"/ws/conversations/{self.conversation.id}/", outsider
             )
-            frame = await self._close_frame(communicator)
+            error, close = await self._rejection(communicator)
 
-            self.assertEqual(frame["type"], "websocket.close")
-            self.assertEqual(frame["code"], 4003)
+            self.assertEqual(error["type"], "error")
+            self.assertEqual(error["code"], 4003)
+            self.assertEqual(close["type"], "websocket.close")
+            self.assertEqual(close["code"], 4003)
 
         async_to_sync(_test)()
 
@@ -111,10 +121,12 @@ class WebSocketAuthTests(TransactionTestCase):
 
         async def _test():
             communicator = socket("/ws/user/")
-            frame = await self._close_frame(communicator)
+            error, close = await self._rejection(communicator)
 
-            self.assertEqual(frame["type"], "websocket.close")
-            self.assertEqual(frame["code"], 4001)
+            self.assertEqual(error["type"], "error")
+            self.assertEqual(error["code"], 4001)
+            self.assertEqual(close["type"], "websocket.close")
+            self.assertEqual(close["code"], 4001)
 
         async_to_sync(_test)()
 
@@ -126,10 +138,12 @@ class WebSocketAuthTests(TransactionTestCase):
                 application,
                 f"/ws/conversations/{self.conversation.id}/?token={self.token}",
             )
-            frame = await self._close_frame(communicator)
+            error, close = await self._rejection(communicator)
 
-            self.assertEqual(frame["type"], "websocket.close")
-            self.assertEqual(frame["code"], 4001)
+            self.assertEqual(error["type"], "error")
+            self.assertEqual(error["code"], 4001)
+            self.assertEqual(close["type"], "websocket.close")
+            self.assertEqual(close["code"], 4001)
 
         async_to_sync(_test)()
 
@@ -156,6 +170,7 @@ class DeliveryReceiptFlowTests(TransactionTestCase):
     async def _connect(self, path, user):
         communicator = socket(path, user)
         await communicator.connect()
+        await communicator.receive_json_from()  # the `connected` hello
         return communicator
 
     async def _first_frame(self, communicator, frame_type, limit=6):

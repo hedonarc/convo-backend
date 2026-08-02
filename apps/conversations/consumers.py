@@ -13,6 +13,7 @@ from apps.conversations.services.conversation_service import (
 from apps.conversations.services.delivery import is_peer_message, record_delivery
 from apps.conversations.services.message_service import post_message_async
 from apps.conversations.services.read_receipts import record_read
+from utils import ws
 from utils.translations import t
 
 logger = logging.getLogger(__name__)
@@ -21,13 +22,24 @@ logger = logging.getLogger(__name__)
 class ClientSocket:
     """How both consumers talk to a browser."""
 
-    async def reject(self, code: int) -> None:
-        """Close with *code* after accepting, so the browser can read it.
+    async def accept_client(self) -> None:
+        """Accept, and say so, so the client knows the connection is real.
 
-        Daphne answers a pre-accept close with an HTTP 403 handshake rejection
-        and discards the application code, leaving the browser with 1006.
+        An accepted socket and a socket accepted only to deliver a rejection
+        look identical until something arrives, which on an idle conversation
+        may be never.
         """
         await self.accept()
+        await self.send(text_data=ws.CONNECTED_FRAME)
+
+    async def reject(self, code: int) -> None:
+        """Refuse the connection in a way the browser can actually read.
+
+        See `utils.ws.rejection_frame` — the code travels as data because the
+        close frame does not survive the proxy.
+        """
+        await self.accept()
+        await self.send(text_data=ws.rejection_frame(code))
         await self.close(code=code)
 
     async def send_frame(self, frame_type: str, data) -> None:
@@ -71,7 +83,7 @@ class ConversationConsumer(ClientSocket, AsyncWebsocketConsumer):
 
         # JWTAuthMiddleware already blocks anonymous users; this is a net.
         if not self.user.is_authenticated:
-            await self.reject(4001)
+            await self.reject(ws.NO_TOKEN)
             return
 
         self.conversation = await conversation_for_participant_async(
@@ -83,12 +95,12 @@ class ConversationConsumer(ClientSocket, AsyncWebsocketConsumer):
                 self.user.id,
                 self.conversation_id,
             )
-            await self.reject(4003)
+            await self.reject(ws.NOT_PARTICIPANT)
             return
 
         self.room_group_name = fanout.conversation_group(self.conversation_id)
         await self.channel_layer.group_add(self.room_group_name, self.channel_name)
-        await self.accept()
+        await self.accept_client()
 
         logger.info(
             "WebSocket connected: user %s joined conversation %s",
@@ -208,12 +220,12 @@ class UserConsumer(ClientSocket, AsyncWebsocketConsumer):
         self.user = self.scope["user"]
 
         if not self.user.is_authenticated:
-            await self.reject(4001)
+            await self.reject(ws.NO_TOKEN)
             return
 
         self.room_group_name = fanout.user_group(self.user.id)
         await self.channel_layer.group_add(self.room_group_name, self.channel_name)
-        await self.accept()
+        await self.accept_client()
 
         changed, _ = await database_sync_to_async(presence.mark_online)(
             self.user.id, self.channel_name
