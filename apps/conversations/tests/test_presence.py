@@ -309,3 +309,53 @@ class PresenceBroadcastAudienceTests(TestCase):
         # updates), and Bob is a conversation peer so he gets it too.
         self.assertIn(fanout.user_group(self.alice.id), sent_to)
         self.assertIn(fanout.user_group(self.bob.id), sent_to)
+
+
+class PresenceRecomputeIsOneRoundTripTests(TestCase):
+    """Recompute runs as a single script, not a read-modify-write sequence."""
+
+    def setUp(self):
+        self.fake = redis_store.client()
+        self.fake.flushall()
+        self.alice = User.objects.create_user(
+            username="alice", email="alice@example.com", password="x"
+        )
+
+    def test_hash_tag_keeps_a_user_s_keys_together(self):
+        """All three keys must hash to one slot for the script to be legal."""
+        keys = [
+            presence._user_key(self.alice.id),
+            presence._conns_index_key(self.alice.id),
+            presence._conn_key(self.alice.id, "ch"),
+        ]
+        tags = {key[key.index("{") : key.index("}") + 1] for key in keys}
+
+        self.assertEqual(tags, {f"{{{self.alice.id}}}"})
+
+    def test_recompute_issues_one_command(self):
+        presence.mark_online(self.alice.id, "ch")
+
+        with patch.object(
+            self.fake, "execute_command", wraps=self.fake.execute_command
+        ) as spy:
+            presence._recompute_user_status(self.alice.id)
+
+        commands = [call.args[0] for call in spy.call_args_list]
+        self.assertEqual(
+            [c for c in commands if c not in {"SCRIPT", "EVALSHA", "EVAL"}],
+            [],
+            f"recompute should be one script call, got {commands}",
+        )
+
+    def test_a_dead_tab_is_pruned_and_the_survivor_decides(self):
+        presence.mark_online(self.alice.id, "ch_alive")
+        presence.mark_online(self.alice.id, "ch_dead")
+        self.fake.delete(presence._conn_key(self.alice.id, "ch_dead"))
+
+        _, payload = presence._recompute_user_status(self.alice.id)
+
+        self.assertEqual(payload["status"], "online")
+        self.assertEqual(
+            self.fake.zrange(presence._conns_index_key(self.alice.id), 0, -1),
+            ["ch_alive"],
+        )

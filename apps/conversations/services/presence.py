@@ -2,9 +2,12 @@
 
 Three keys per user:
 
-    presence:user:<id>            hash    status, last_seen_at, manual_away
-    presence:conns:<id>           zset    index of this user's channel names
-    presence:conn:<id>:<channel>  string  "online" | "away", TTL bound
+    presence:user:{<id>}            hash    status, last_seen_at, manual_away
+    presence:conns:{<id>}           zset    index of this user's channel names
+    presence:conn:{<id>}:<channel>  string  "online" | "away", TTL bound
+
+The braces are a Redis hash tag, so one user's three keys always land on the
+same node and `_RECOMPUTE` can touch them in a single script.
 
 A user is as present as their most-present tab: online if any is online,
 away if any is away, offline once none survive. The per-channel key's TTL
@@ -40,46 +43,23 @@ _redis = redis_store.client
 
 
 def _user_key(user_id: int) -> str:
-    return f"presence:user:{user_id}"
+    return f"presence:user:{{{user_id}}}"
 
 
 def _conns_index_key(user_id: int) -> str:
-    return f"presence:conns:{user_id}"
+    return f"presence:conns:{{{user_id}}}"
+
+
+def _conn_prefix(user_id: int) -> str:
+    return f"presence:conn:{{{user_id}}}:"
 
 
 def _conn_key(user_id: int, channel_name: str) -> str:
-    return f"presence:conn:{user_id}:{channel_name}"
+    return _conn_prefix(user_id) + channel_name
 
 
 def _now_iso() -> str:
     return datetime.now(UTC).isoformat()
-
-
-def _compute_user_status(conn_statuses: Iterable[str]) -> str:
-    """Reduce per-connection states to a single user-level state."""
-    statuses = list(conn_statuses)
-    if not statuses:
-        return OFFLINE
-    if ONLINE in statuses:
-        return ONLINE
-    return AWAY
-
-
-def _persist_status(user_id: int, status: str) -> tuple[bool, dict]:
-    """Store the user-level status, reporting whether it actually moved.
-
-    Callers skip the broadcast when it did not.
-    """
-    r = _redis()
-    key = _user_key(user_id)
-    previous = r.hget(key, "status")
-    now = _now_iso()
-    r.hset(key, mapping={"status": status, "last_seen_at": now})
-    return previous != status, {
-        "user_id": user_id,
-        "status": status,
-        "last_seen_at": now,
-    }
 
 
 def _record_channel(user_id: int, channel_name: str, status: str) -> None:
@@ -91,51 +71,67 @@ def _record_channel(user_id: int, channel_name: str, status: str) -> None:
     r.zadd(_conns_index_key(user_id), {channel_name: time.time()})
 
 
-def _is_manual_away(user_id: int) -> bool:
-    """Did the user choose "Away" themselves?
+# Read the live connections, drop the dead ones and write the resulting user
+# status, all in one indivisible step. Doing this as separate round-trips let
+# two tabs interleave and persist a status neither of them computed.
+_RECOMPUTE_LUA = """
+local user_key, index_key = KEYS[1], KEYS[2]
+local prefix, now = ARGV[1], ARGV[2]
+local ONLINE, AWAY, OFFLINE = ARGV[3], ARGV[4], ARGV[5]
 
-    Held on the user key rather than a connection key so tab focus and
-    reconnects cannot quietly undo a stated intent.
-    """
-    return _redis().hget(_user_key(user_id), "manual_away") == "1"
+local channels = redis.call('ZRANGE', index_key, 0, -1)
+local live, stale = {}, {}
+for i = 1, #channels do
+  local value = redis.call('GET', prefix .. channels[i])
+  if value then live[#live + 1] = value else stale[#stale + 1] = channels[i] end
+end
+
+if #stale > 0 then redis.call('ZREM', index_key, unpack(stale)) end
+
+local status
+if #live == 0 then
+  -- "Away" is session-scoped, as in Slack: the last tab leaving clears it.
+  redis.call('HDEL', user_key, 'manual_away')
+  status = OFFLINE
+elseif redis.call('HGET', user_key, 'manual_away') == '1' then
+  -- Checked after liveness, so a stale override cannot pin an offline user.
+  status = AWAY
+else
+  status = AWAY
+  for i = 1, #live do
+    if live[i] == ONLINE then status = ONLINE break end
+  end
+end
+
+local previous = redis.call('HGET', user_key, 'status')
+redis.call('HSET', user_key, 'status', status, 'last_seen_at', now)
+return {previous ~= status and 1 or 0, status}
+"""
+
+_recompute_script = None
 
 
 def _recompute_user_status(user_id: int) -> tuple[bool, dict]:
     """Decide what the world sees, pruning connections that died silently.
 
-    Every `mark_*` ends here, so the live/stale boundary is drawn once.
-    Costs 5-6 Redis ops.
+    Every `mark_*` ends here, so the live/stale boundary is drawn once. Runs
+    as one script rather than five round-trips, which is both cheaper and the
+    only way two tabs racing cannot leave a status neither computed.
     """
-    r = _redis()
-    index_key = _conns_index_key(user_id)
-    channels = r.zrange(index_key, 0, -1)
-    if not channels:
-        # "Away" is session-scoped, as in Slack: the last tab leaving clears it.
-        r.hdel(_user_key(user_id), "manual_away")
-        return _persist_status(user_id, OFFLINE)
+    global _recompute_script
+    if _recompute_script is None:
+        _recompute_script = _redis().register_script(_RECOMPUTE_LUA)
 
-    statuses = r.mget([_conn_key(user_id, c) for c in channels])
-    live: list[str] = []
-    stale: list[str] = []
-    for chan, status in zip(channels, statuses, strict=True):
-        if status is None:
-            stale.append(chan)
-        else:
-            live.append(status)
-
-    # Conditional so the steady-state path does not spend an op.
-    if stale:
-        r.zrem(index_key, *stale)
-
-    if not live:
-        r.hdel(_user_key(user_id), "manual_away")
-        return _persist_status(user_id, OFFLINE)
-
-    # Checked after liveness, so a stale override cannot pin an offline user.
-    if _is_manual_away(user_id):
-        return _persist_status(user_id, AWAY)
-
-    return _persist_status(user_id, _compute_user_status(live))
+    now = _now_iso()
+    changed, status = _recompute_script(
+        keys=[_user_key(user_id), _conns_index_key(user_id)],
+        args=[_conn_prefix(user_id), now, ONLINE, AWAY, OFFLINE],
+    )
+    return bool(changed), {
+        "user_id": user_id,
+        "status": status,
+        "last_seen_at": now,
+    }
 
 
 # ── Mutators ────────────────────────────────────────────────────────────────
