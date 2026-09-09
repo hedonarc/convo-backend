@@ -330,13 +330,17 @@ class Command(BaseCommand):
     def _empty_conversation(self, me, peer):
         """One thread with no messages, so the empty state is reachable.
 
+        Prefers the superuser, who already exists in most local setups, but
+        falls back to a demo peer — on a fresh clone with no superuser this
+        state would otherwise be silently missing.
+
         Aged deliberately: a brand new conversation would sort to the top of
         the sidebar and make the app look empty at a glance.
         """
-        admin = User.objects.filter(is_superuser=True).exclude(pk=me.pk).first()
-        if admin is None:
-            return
-        conversation = self._conversation(me, admin)
+        other = User.objects.filter(is_superuser=True).exclude(pk=me.pk).first()
+        if other is None:
+            other = self._peer(Peer("nadia", "Nadia", "Haddad"))
+        conversation = self._conversation(me, other)
         stale = timezone.now() - timedelta(days=6)
         Conversation.objects.filter(pk=conversation.pk).update(
             updated_at=stale, created_at=stale
