@@ -45,6 +45,12 @@ migs:
 	$(PYTHON) manage.py makemigrations
 	$(PYTHON) manage.py migrate
 
+seed:
+	$(PYTHON) manage.py seed_demo --settings=settings.local
+
+seed-fresh:
+	$(PYTHON) manage.py seed_demo --fresh --settings=settings.local
+
 showmigrations:
 	$(PYTHON) manage.py showmigrations
 
